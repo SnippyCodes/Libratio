@@ -1,0 +1,237 @@
+name: mixed-precision-training-env
+version: "2.0.0"
+description: >
+  A reinforcement learning environment simulating the real-world ML engineering
+  task of configuring mixed-precision training (FP32/BF16/FP16/FP8) for large
+  neural networks. Agents learn to assign precision formats layer-by-layer,
+  detect training instability from loss trajectories, and optimize memory/time/
+  accuracy trade-offs under hard constraints — exactly the decisions that Meta
+  engineers face when training models like LLaMA at scale.
+
+author: "Aaryan"
+tags: ["ml-engineering", "mixed-precision", "llm-training", "optimization"]
+
+tasks:
+  - id: precision_assignment
+    description: >
+      Assign a floating-point precision format (FP32, BF16, FP16, or FP8) to
+      each layer of a given neural network architecture, one layer at a time.
+      The agent receives per-step rewards based on stability and efficiency of
+      each choice. Catastrophic choices (e.g. FP8 on embedding layers) result
+      in an immediate score of 0.0.
+    difficulty: easy
+    max_steps: 5
+    observation_space:
+      type: dict
+      properties:
+        task_id:
+          type: string
+          enum: ["precision_assignment"]
+        scenario_id:
+          type: string
+        model_name:
+          type: string
+        total_layers:
+          type: integer
+        current_layer_index:
+          type: integer
+        current_layer:
+          type: dict
+          properties:
+            name: {type: string}
+            layer_type: {type: string, enum: ["embedding", "attention", "ffn", "layernorm", "output"]}
+            num_params: {type: integer}
+            gradient_sensitivity: {type: string}
+            activation_range: {type: string}
+        assigned_so_far:
+          type: dict
+          description: "Layer name → precision format already assigned"
+        available_precisions:
+          type: array
+          items: {type: string, enum: ["FP32", "BF16", "FP16", "FP8"]}
+        memory_budget_gb:
+          type: number
+        memory_used_gb:
+          type: number
+        speed_target_speedup:
+          type: number
+    action_space:
+      type: dict
+      properties:
+        precision:
+          type: string
+          enum: ["FP32", "BF16", "FP16", "FP8"]
+          description: "The precision format to assign to the current layer"
+        reasoning:
+          type: string
+          description: "Optional explanation for the choice"
+    reward:
+      type: number
+      minimum: 0.0
+      maximum: 1.0
+      description: >
+        Per-step reward. 0.0 for catastrophic choices (NaN/underflow). Partial
+        credit for safe but suboptimal choices. 1.0 for the ideal precision given
+        the layer type.
+
+  - id: instability_detection
+    description: >
+      Progressively analyze windows of a training loss trajectory to detect
+      precision-induced instability. The agent can continue monitoring or flag
+      the run as unstable with a root cause analysis. Rewards increase for
+      detecting crashes early and correctly identifying the culprit layer/precision.
+    difficulty: medium
+    max_steps: 5
+    observation_space:
+      type: dict
+      properties:
+        task_id:
+          type: string
+          enum: ["instability_detection"]
+        scenario_id:
+          type: string
+        precision_config:
+          type: dict
+          description: "Current precision configuration of the model"
+        total_training_steps:
+          type: integer
+        steps_revealed_so_far:
+          type: integer
+        loss_trajectory_window:
+          type: array
+          items:
+            type: ["number", "null"]
+            description: "null indicates NaN (training crash)"
+        window_index:
+          type: integer
+        windows_remaining:
+          type: integer
+    action_space:
+      type: dict
+      properties:
+        action_type:
+          type: string
+          enum: ["continue_monitoring", "flag_instability"]
+        analysis:
+          type: string
+          description: "Agent's running commentary on what it observes"
+        flagged_step:
+          type: ["integer", "null"]
+          description: "Training step where instability occurred (required if flagging)"
+        root_cause:
+          type: ["string", "null"]
+          description: "Suspected precision failure cause (e.g. 'fp8 embedding underflow')"
+    reward:
+      type: number
+      minimum: 0.0
+      maximum: 1.0
+      description: >
+        Partial reward each step. Penalizes false positives. Rewards early and
+        accurate flagging. Bonus for matching root cause keywords.
+
+  - id: multi_objective_optimization
+    description: >
+      Iteratively refine a precision strategy under hard memory, time, and
+      accuracy constraints. The environment simulates the full model and returns
+      computed metrics each iteration. Agents get up to 5 iterations to converge
+      on a Pareto-optimal configuration.
+    difficulty: hard
+    max_steps: 5
+    observation_space:
+      type: dict
+      properties:
+        task_id:
+          type: string
+          enum: ["multi_objective_optimization"]
+        scenario_id:
+          type: string
+        constraints:
+          type: dict
+          properties:
+            memory_budget_gb: {type: number}
+            time_budget_days: {type: number}
+            accuracy_threshold: {type: number}
+        model_total_params:
+          type: integer
+        layer_types:
+          type: array
+          items: {type: string}
+        iterations_remaining:
+          type: integer
+        best_score_so_far:
+          type: number
+        previous_result:
+          type: ["dict", "null"]
+          description: "Computed metrics from the last iteration"
+        previous_feedback:
+          type: ["string", "null"]
+    action_space:
+      type: dict
+      properties:
+        precision_strategy:
+          type: dict
+          description: "Mapping of layer_type → precision format"
+          example:
+            embedding: "FP32"
+            attention: "BF16"
+            ffn: "FP8"
+            layernorm: "BF16"
+            output: "FP32"
+        reasoning:
+          type: string
+    reward:
+      type: number
+      minimum: 0.0
+      maximum: 1.0
+      description: >
+        0.0 if any hard constraint is violated. Otherwise scored on how
+        close the solution is to the Pareto-optimal frontier (max efficiency
+        within constraints). Score improves each iteration the agent refines.
+
+endpoints:
+  reset:
+    method: POST
+    path: /reset
+    description: "Start a new episode for a given task. Body: {task_id: string}"
+  step:
+    method: POST
+    path: /step
+    description: "Submit an action. Body: {action: dict}"
+  state:
+    method: POST
+    path: /state
+    description: "Get current environment state without advancing it"
+  tasks:
+    method: GET
+    path: /tasks
+    description: "List all available tasks with metadata"
+
+graders:
+  - id: precision_assignment_grader
+    type: deterministic
+    implementation: environment/mixed_precision_env.py
+    description: "Physics-based stability and efficiency scoring per layer type"
+    deterministic: true
+    score_range: [0.0, 1.0]
+
+  - id: instability_detection_grader
+    type: deterministic
+    implementation: environment/mixed_precision_env.py
+    description: "Trajectory window analysis with partial credit for timing and root cause"
+    deterministic: true
+    score_range: [0.0, 1.0]
+
+  - id: multi_objective_grader
+    type: deterministic
+    implementation: environment/mixed_precision_env.py
+    description: "Constraint satisfaction + Pareto distance scoring"
+    deterministic: true
+    score_range: [0.0, 1.0]
+
+baseline:
+  script: inference.py
+  description: "LLM agent using OpenAI-compatible API with conversation history"
+  expected_scores:
+    precision_assignment: 0.91
+    instability_detection: 0.70
+    multi_objective_optimization: 0.77

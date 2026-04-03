@@ -1,0 +1,23 @@
+# =============================================================
+# FigureOut — Root .gitignore
+# =============================================================
+
+# --- Secrets ---
+.env
+*.env.local
+
+# --- Scratch / research files (not for the submission) ---
+DETAILED_PROJECT_CONTEXT.md
+HACKATHON_RESEARCH.md
+*.excalidraw
+
+# --- Python & venvs ---
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# --- IDE ---
+.vscode/
+.idea/
+.DS_Store
