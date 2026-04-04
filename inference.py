@@ -122,67 +122,86 @@ def run_task(task_id: str):
     conversation_history = []
 
     # Reset environment for this task
-    res = httpx.post(f"{ENV_URL}/reset", json={"task_id": task_id})
-    obs = res.json()["observation"]
+    try:
+        res = httpx.post(f"{ENV_URL}/reset", json={"task_id": task_id})
+        obs = res.json()["observation"]
+    except Exception as e:
+        print(f"Error connecting to env: {e}", flush=True)
+        return 0.0, 0
 
-    total_reward = 0.0
+    print(f"[START] task={task_id} env=mixed_precision_env model={MODEL_NAME}", flush=True)
+
+    rewards_list = []
     steps = 0
 
     while True:
+        steps += 1
+        
         # Call LLM to decide action
         action = call_llm(system_prompt, obs, conversation_history)
+        
+        error = None
+        done = False
+        reward = 0.0
 
         if action is None:
-            print(f"  [STEP] step={steps} ERROR: LLM returned invalid response")
-            break
+            action = {}
+            error = "invalid LLM response"
+            done = True
+        else:
+            # Add to conversation history to have context of what was sent
+            conversation_history.append({"role": "user", "content": json.dumps(obs, default=str)})
+            conversation_history.append({"role": "assistant", "content": json.dumps(action, default=str)})
 
-        print(f"  [STEP] step={steps} action={json.dumps(action, default=str)}")
+            # Send action to environment
+            try:
+                step_res = httpx.post(f"{ENV_URL}/step", json={"action": action})
+                data = step_res.json()
 
-        # Add to conversation history for context
-        conversation_history.append({"role": "user", "content": json.dumps(obs, default=str)})
-        conversation_history.append({"role": "assistant", "content": json.dumps(action, default=str)})
+                reward = data["reward"]["score"]
+                feedback = data["reward"]["feedback"]
+                done = data["done"]
+                obs = data.get("observation", None)
 
-        # Send action to environment
-        step_res = httpx.post(f"{ENV_URL}/step", json={"action": action})
-        data = step_res.json()
+                # Append environment feedback
+                conversation_history.append({
+                    "role": "user",
+                    "content": f"Environment feedback: reward={reward}, feedback={feedback}"
+                })
+            except Exception as e:
+                done = True
+                error = f"env error: {str(e)}"
 
-        reward = data["reward"]["score"]
-        feedback = data["reward"]["feedback"]
-        done = data["done"]
-        total_reward += reward
-        steps += 1
+        rewards_list.append(reward)
+        action_str = json.dumps(action, default=str).replace('\\n', ' ')
+        error_str = error if error else "null"
+        done_str = str(done).lower()
 
-        print(f"  [STEP] step={steps} reward={reward} feedback={feedback}")
-
-        # Add environment feedback to conversation for the feedback loop
-        conversation_history.append({
-            "role": "user",
-            "content": f"Environment feedback: reward={reward}, feedback={feedback}"
-        })
+        print(f"[STEP] step={steps} action={action_str} reward={reward:.2f} done={done_str} error={error_str}", flush=True)
 
         if done:
             break
 
-        obs = data["observation"]
+    score = sum(rewards_list) / max(steps, 1)
+    # Define a simple threshold for success
+    success = score >= 0.70
+    success_str = str(success).lower()
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards_list)
 
-    avg_reward = total_reward / max(steps, 1)
-    return avg_reward, steps
+    print(f"[END] success={success_str} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
+    return score, steps
 
 
 def main():
-    print(f"[START] endpoint={API_BASE_URL} model={MODEL_NAME}")
+    task_id = os.environ.get("TASK_ID")
+    if task_id:
+        tasks = [task_id]
+    else:
+        # Default fallback to testing all tasks sequentially
+        tasks = ["precision_assignment", "instability_detection", "multi_objective_optimization"]
 
-    tasks = ["precision_assignment", "instability_detection", "multi_objective_optimization"]
-    all_scores = {}
-
-    for task_id in tasks:
-        print(f"\n[TASK] {task_id}")
-        avg_score, num_steps = run_task(task_id)
-        all_scores[task_id] = avg_score
-        print(f"[TASK_COMPLETE] {task_id} avg_score={avg_score:.3f} steps={num_steps}")
-
-    print(f"\n[RESULTS] {json.dumps(all_scores)}")
-    print("[END]")
+    for t in tasks:
+        run_task(t)
 
 
 if __name__ == "__main__":

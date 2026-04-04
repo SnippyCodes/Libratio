@@ -1,23 +1,41 @@
 # =============================================================
-# FigureOut — Root .gitignore
+# Mixed Precision Training Environment — .gitignore
 # =============================================================
 
-# --- Secrets ---
+# --- Secrets (NEVER commit) ---
 .env
 *.env.local
+*.env.*.local
 
-# --- Scratch / research files (not for the submission) ---
-DETAILED_PROJECT_CONTEXT.md
-HACKATHON_RESEARCH.md
-*.excalidraw
-
-# --- Python & venvs ---
+# --- Python ---
 __pycache__/
 *.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# --- Virtual environments ---
 venv/
 .venv/
+env/
+ENV/
 
 # --- IDE ---
 .vscode/
 .idea/
+*.swp
+*.swo
 .DS_Store
+
+# --- Logs & temp ---
+*.log
+*.tmp
+*.bak
+
+# --- Safe to commit ---
+# .env.example  ← intentionally NOT ignored (it's the safe template)
