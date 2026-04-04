@@ -36,6 +36,6 @@ ENV/
 *.log
 *.tmp
 *.bak
-
+Untitled-2026-04-02-2056
 # --- Safe to commit ---
 # .env.example  ← intentionally NOT ignored (it's the safe template)

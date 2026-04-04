@@ -1,0 +1,21 @@
+name: Sync to Hugging Face Space
+on:
+  push:
+    branches: [main]
+  # Enables you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  sync-to-hub:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Push to hub
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          # Make sure to replace "SnippyCodes/Libratio" with your actual HF Space ID if it's different!
+          git push -f https://SnippyCodes:$HF_TOKEN@huggingface.co/spaces/SnippyCodes/Libratio main
