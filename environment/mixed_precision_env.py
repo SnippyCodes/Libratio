@@ -20,9 +20,9 @@ from environment.physics_model import (
 
 class MixedPrecisionEnvironment:
     TASK_DEFS = [
-        {"task_id": "precision_assignment", "description": "Assign precision formats to model layers one at a time", "difficulty": "easy", "max_steps": 5},
-        {"task_id": "instability_detection", "description": "Progressively analyze training loss to detect precision-induced instability", "difficulty": "medium", "max_steps": 5},
-        {"task_id": "multi_objective_optimization", "description": "Iteratively optimize precision strategy under memory, time, and accuracy constraints", "difficulty": "hard", "max_steps": 5},
+        {"id": "precision_assignment", "task_id": "precision_assignment", "description": "Assign precision formats to model layers one at a time", "difficulty": "easy", "max_steps": 5},
+        {"id": "instability_detection", "task_id": "instability_detection", "description": "Progressively analyze training loss to detect precision-induced instability", "difficulty": "medium", "max_steps": 5},
+        {"id": "multi_objective_optimization", "task_id": "multi_objective_optimization", "description": "Iteratively optimize precision strategy under memory, time, and accuracy constraints", "difficulty": "hard", "max_steps": 5},
     ]
 
     def __init__(self):
@@ -62,6 +62,7 @@ class MixedPrecisionEnvironment:
 
     def state(self) -> Dict[str, Any]:
         return {
+            "task_id": self.current_task,
             "current_task": self.current_task,
             "current_scenario_id": self.scenario["scenario_id"] if self.scenario else None,
             "step_number": self.step_number,

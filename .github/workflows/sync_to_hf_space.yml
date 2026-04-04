@@ -8,8 +8,10 @@ on:
 jobs:
   sync-to-hub:
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           lfs: true
@@ -17,5 +19,9 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          # Make sure to replace "SnippyCodes/Libratio" with your actual HF Space ID if it's different!
-          git push -f https://SnippyCodes:$HF_TOKEN@huggingface.co/spaces/SnippyCodes/Libratio main
+          if [ -z "$HF_TOKEN" ]; then
+            echo "Error: HF_TOKEN is empty! Make sure you added it exactly as 'HF_TOKEN' in Settings > Secrets and variables > Actions"
+            exit 1
+          fi
+          git remote add space https://SnippyCodes:$HF_TOKEN@huggingface.co/spaces/SnippyCodes/Libratio
+          git push -f space main
