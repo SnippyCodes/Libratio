@@ -9,7 +9,7 @@ from openai import OpenAI
 
 # Required environment variables
 API_BASE_URL = os.environ.get("API_BASE_URL", "https://api.openai.com/v1")
-MODEL_NAME = os.environ.get("MODEL_NAME", "gpt-4o-mini")
+MODEL_NAME = os.environ.get("MODEL_NAME", "llama-3.3-70b-versatile")
 API_KEY = os.environ.get("HF_TOKEN") or os.environ.get("OPENAI_API_KEY") or os.environ.get("API_KEY", "")
 
 ENV_URL = os.environ.get("ENV_URL", "http://localhost:7860")
