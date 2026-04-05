@@ -35,8 +35,9 @@ def get_tasks() -> List[TaskDefinition]:
 
 
 @app.post("/reset", response_model=ResetResponse)
-def reset_environment(payload: ResetRequest):
-    obs = env.reset(payload.task_id)
+def reset_environment(payload: dict = {}):
+    task_id = payload.get("task_id", "precision_assignment")
+    obs = env.reset(task_id)
     return ResetResponse(observation=obs)
 
 
