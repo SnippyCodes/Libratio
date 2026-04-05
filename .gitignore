@@ -39,3 +39,13 @@ ENV/
 Untitled-2026-04-02-2056
 # --- Safe to commit ---
 # .env.example  ← intentionally NOT ignored (it's the safe template)
+
+# --- Useless Hackathon Notes / Sketches ---
+*.excalidraw
+HACKATHON_RESEARCH.md
+DETAILED_PROJECT_CONTEXT.md
+
+# --- Local Benchmarking Artifacts ---
+benchmark_results.json
+benchmark.py
+generate_chart.py

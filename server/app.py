@@ -10,7 +10,7 @@ import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from environment.mixed_precision_env import MixedPrecisionEnvironment
-from app.models import (
+from server.models import (
     ResetRequest, ResetResponse, StepResponse, StateResponse,
     TaskDefinition, RewardPayload,
 )
@@ -60,3 +60,11 @@ def step_environment(payload: dict = {}):
 def get_state():
     s = env.state()
     return StateResponse(**s)
+
+
+def main():
+    import uvicorn
+    uvicorn.run("server.app:app", host="0.0.0.0", port=7860)
+
+if __name__ == "__main__":
+    main()
