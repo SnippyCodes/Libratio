@@ -86,6 +86,41 @@ class Task3Action(BaseModel):
 
 
 # ──────────────────────────────────────────────
+# Task 4: Precision Transfer
+# Agent adapts a working config to a new architecture
+# ──────────────────────────────────────────────
+class SourceModelInfo(BaseModel):
+    name: str
+    total_params: int
+    layer_distribution: Dict[str, float]
+    working_config: Dict[str, str]
+    metrics: Dict[str, float]
+
+
+class TargetModelInfo(BaseModel):
+    name: str
+    total_params: int
+    layer_distribution: Dict[str, float]
+    constraints: Dict[str, float]
+
+
+class Task4Observation(BaseModel):
+    task_id: Literal["precision_transfer"] = "precision_transfer"
+    scenario_id: str
+    source_model: SourceModelInfo
+    target_model: TargetModelInfo
+    iterations_remaining: int
+    best_score_so_far: float = 0.0
+    previous_result: Optional[Dict[str, Any]] = None
+    previous_feedback: Optional[str] = None
+
+
+class Task4Action(BaseModel):
+    precision_strategy: Dict[str, PrecisionLevel]
+    reasoning: str = ""
+
+
+# ──────────────────────────────────────────────
 # Universal Response Models (OpenEnv Spec)
 # ──────────────────────────────────────────────
 class RewardPayload(BaseModel):
@@ -109,6 +144,7 @@ class ResetResponse(BaseModel):
 
 
 class StateResponse(BaseModel):
+    task_id: Optional[str] = None
     current_task: Optional[str] = None
     current_scenario_id: Optional[str] = None
     step_number: int = 0
@@ -117,7 +153,9 @@ class StateResponse(BaseModel):
 
 
 class TaskDefinition(BaseModel):
+    id: str
     task_id: str
     description: str
     difficulty: str
     max_steps: int
+

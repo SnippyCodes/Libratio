@@ -188,6 +188,74 @@ tasks:
         close the solution is to the Pareto-optimal frontier (max efficiency
         within constraints). Score improves each iteration the agent refines.
 
+  - id: precision_transfer
+    description: >
+      Adapt a working precision configuration from a source model architecture
+      to a target model with different parameter count, layer distribution, and
+      constraints. The agent must reason about how scale and architecture changes
+      affect precision requirements, rather than blindly copying the source config.
+      Bonus points for intelligent adaptation (changing layers that need it).
+    difficulty: medium-hard
+    max_steps: 3
+    observation_space:
+      type: dict
+      properties:
+        task_id:
+          type: string
+          enum: ["precision_transfer"]
+        scenario_id:
+          type: string
+        source_model:
+          type: dict
+          properties:
+            name: {type: string}
+            total_params: {type: integer}
+            layer_distribution: {type: dict}
+            working_config: {type: dict, description: "Precision config that works on source"}
+            metrics: {type: dict, description: "Performance metrics achieved with working_config"}
+        target_model:
+          type: dict
+          properties:
+            name: {type: string}
+            total_params: {type: integer}
+            layer_distribution: {type: dict}
+            constraints:
+              type: dict
+              properties:
+                memory_budget_gb: {type: number}
+                time_budget_days: {type: number}
+                accuracy_threshold: {type: number}
+        iterations_remaining:
+          type: integer
+        best_score_so_far:
+          type: number
+        previous_result:
+          type: ["dict", "null"]
+        previous_feedback:
+          type: ["string", "null"]
+    action_space:
+      type: dict
+      properties:
+        precision_strategy:
+          type: dict
+          description: "Mapping of layer_type to precision format for the TARGET model"
+          example:
+            embedding: "FP32"
+            attention: "BF16"
+            ffn: "FP8"
+            layernorm: "BF16"
+            output: "FP32"
+        reasoning:
+          type: string
+    reward:
+      type: number
+      minimum: 0.0
+      maximum: 1.0
+      description: >
+        0.0 if any constraint is violated. Base 0.4 for valid transfer, plus
+        bonuses for efficiency and intelligent adaptation (changing layers that
+        need it rather than blindly copying).
+
 endpoints:
   reset:
     method: POST
@@ -228,10 +296,19 @@ graders:
     deterministic: true
     score_range: [0.0, 1.0]
 
+  - id: precision_transfer_grader
+    type: deterministic
+    implementation: environment/mixed_precision_env.py
+    description: "Transfer quality scoring — constraint satisfaction + adaptation intelligence"
+    deterministic: true
+    score_range: [0.0, 1.0]
+
 baseline:
   script: inference.py
   description: "LLM agent using OpenAI-compatible API with conversation history"
   expected_scores:
-    precision_assignment: 0.91
-    instability_detection: 0.70
-    multi_objective_optimization: 0.77
+    precision_assignment: 1.00
+    instability_detection: 0.65
+    multi_objective_optimization: 0.72
+    precision_transfer: 0.65
+

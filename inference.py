@@ -8,13 +8,16 @@ import httpx
 from openai import OpenAI
 
 # Required environment variables
-API_BASE_URL = os.environ.get("API_BASE_URL", "https://api.openai.com/v1")
-MODEL_NAME = os.environ.get("MODEL_NAME", "llama-3.3-70b-versatile")
-API_KEY = os.environ.get("HF_TOKEN") or os.environ.get("OPENAI_API_KEY") or os.environ.get("API_KEY", "")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "llama-3.3-70b-versatile")
+HF_TOKEN = os.getenv("HF_TOKEN")
 
-ENV_URL = os.environ.get("ENV_URL", "http://localhost:7860")
+if HF_TOKEN is None:
+    raise ValueError("HF_TOKEN environment variable is required")
 
-client = OpenAI(api_key=API_KEY, base_url=API_BASE_URL)
+ENV_URL = os.getenv("ENV_URL", "http://localhost:7860")
+
+client = OpenAI(api_key=HF_TOKEN, base_url=API_BASE_URL)
 
 TASK_SYSTEM_PROMPTS = {
     "precision_assignment": """You are an expert ML infrastructure engineer configuring mixed-precision training.
@@ -81,7 +84,33 @@ STRATEGY FOR ALL 5 ITERATIONS:
 KEY INSIGHT: Even if you cannot beat the baseline score via exploration, you still want EVERY iteration to be a VALID strategy (score > 0). Submitting an invalid strategy (score=0.0) destroys your average. When uncertain, resubmit the best valid strategy you've seen.
 
 RESPOND WITH ONLY valid JSON:
-{"precision_strategy": {"embedding": "FP32", "attention": "BF16", "ffn": "FP8", "layernorm": "BF16", "output": "FP32"}, "reasoning": "what you changed and why"}"""
+{"precision_strategy": {"embedding": "FP32", "attention": "BF16", "ffn": "FP8", "layernorm": "BF16", "output": "FP32"}, "reasoning": "what you changed and why"}""",
+
+    "precision_transfer": """You are transferring a working precision configuration from a SOURCE model to a TARGET model.
+
+You are given:
+- Source model: its architecture, layer distribution, working precision config, and performance metrics
+- Target model: its architecture, layer distribution, and hard constraints (memory, time, accuracy)
+
+Your job: adapt the source config so it works on the target model. The target has DIFFERENT:
+- Parameter count (may be larger or smaller)
+- Layer distribution (e.g., MoE models have much more FFN)
+- Constraints (tighter or looser budgets)
+
+KEY RULES:
+1. embedding and output MUST always be FP32 (regardless of source config)
+2. If the target is much LARGER than the source, you need MORE aggressive precision (more FP8/BF16)
+3. If the target is much SMALLER, you can afford HIGHER precision (upgrade FP8→BF16)
+4. If target has more FFN params (e.g. MoE), FFN=FP8 becomes even more critical for memory savings
+5. NEVER blindly copy the source config — you get BONUS points for intelligent adaptation
+6. You get 3 attempts. Use iteration 1 to test, then refine based on feedback.
+
+STRATEGY:
+- Iteration 1: Analyze the source config + target constraints. Adapt aggressiveness based on scale ratio.
+- Iteration 2-3: Refine based on metrics feedback. Tighten or relax precision as needed.
+
+RESPOND WITH ONLY valid JSON:
+{"precision_strategy": {"embedding": "FP32", "attention": "BF16", "ffn": "FP8", "layernorm": "BF16", "output": "FP32"}, "reasoning": "what you changed from source and why"}"""
 }
 
 
@@ -188,7 +217,7 @@ def run_task(task_id: str):
     success_str = str(success).lower()
     rewards_str = ",".join(f"{r:.2f}" for r in rewards_list)
 
-    print(f"[END] success={success_str} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
+    print(f"[END] success={success_str} steps={steps} rewards={rewards_str}", flush=True)
     return score, steps
 
 
@@ -198,7 +227,7 @@ def main():
         tasks = [task_id]
     else:
         # Default fallback to testing all tasks sequentially
-        tasks = ["precision_assignment", "instability_detection", "multi_objective_optimization"]
+        tasks = ["precision_assignment", "instability_detection", "multi_objective_optimization", "precision_transfer"]
 
     for t in tasks:
         run_task(t)

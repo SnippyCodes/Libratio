@@ -23,6 +23,7 @@ class MixedPrecisionEnvironment:
         {"id": "precision_assignment", "task_id": "precision_assignment", "description": "Assign precision formats to model layers one at a time", "difficulty": "easy", "max_steps": 5},
         {"id": "instability_detection", "task_id": "instability_detection", "description": "Progressively analyze training loss to detect precision-induced instability", "difficulty": "medium", "max_steps": 5},
         {"id": "multi_objective_optimization", "task_id": "multi_objective_optimization", "description": "Iteratively optimize precision strategy under memory, time, and accuracy constraints", "difficulty": "hard", "max_steps": 5},
+        {"id": "precision_transfer", "task_id": "precision_transfer", "description": "Adapt a working precision config from a source model to a different target architecture", "difficulty": "medium-hard", "max_steps": 3},
     ]
 
     def __init__(self):
@@ -46,6 +47,8 @@ class MixedPrecisionEnvironment:
             return self._reset_task2()
         elif task_id == "multi_objective_optimization":
             return self._reset_task3()
+        elif task_id == "precision_transfer":
+            return self._reset_task4()
         else:
             raise ValueError(f"Unknown task: {task_id}")
 
@@ -58,6 +61,8 @@ class MixedPrecisionEnvironment:
             return self._step_task2(action)
         elif self.current_task == "multi_objective_optimization":
             return self._step_task3(action)
+        elif self.current_task == "precision_transfer":
+            return self._step_task4(action)
         return {"observation": None, "reward": {"score": 0.0, "feedback": "No active task."}, "done": True, "info": {}}
 
     def state(self) -> Dict[str, Any]:
@@ -313,3 +318,107 @@ class MixedPrecisionEnvironment:
 
         next_obs = None if done else self._task3_observation()
         return {"observation": next_obs, "reward": {"score": score, "feedback": feedback}, "done": done, "info": {"computed_metrics": result}}
+
+    # -- Task 4: Precision Transfer --
+    def _reset_task4(self) -> Dict[str, Any]:
+        self.scenario = ScenarioLoader.get_task4()
+        self.task_state = {
+            "iterations_left": self.scenario["max_iterations"],
+            "best_score": 0.0,
+            "best_result": None,
+            "prev_feedback": None,
+        }
+        return self._task4_observation()
+
+    def _task4_observation(self) -> Dict[str, Any]:
+        s = self.task_state
+        sc = self.scenario
+        return {
+            "task_id": "precision_transfer",
+            "scenario_id": sc["scenario_id"],
+            "source_model": sc["source_model"],
+            "target_model": {
+                "name": sc["target_model"]["name"],
+                "total_params": sc["target_model"]["total_params"],
+                "layer_distribution": sc["target_model"]["layer_distribution"],
+                "constraints": sc["target_model"]["constraints"],
+            },
+            "iterations_remaining": s["iterations_left"],
+            "best_score_so_far": round(s["best_score"], 3),
+            "previous_result": s["best_result"],
+            "previous_feedback": s["prev_feedback"],
+        }
+
+    def _step_task4(self, action: Dict[str, Any]) -> Dict[str, Any]:
+        s = self.task_state
+        strategy = action.get("precision_strategy", {})
+        sc = self.scenario
+        target = sc["target_model"]
+        dist = target["layer_distribution"]
+        constraints = target["constraints"]
+        self.step_number += 1
+        s["iterations_left"] -= 1
+
+        # Use the same physics model as Task 3 for consistency
+        metrics = compute_training_cost(
+            total_params=target["total_params"],
+            precision_strategy=strategy,
+            layer_distribution=dist,
+        )
+
+        result = {
+            "memory_gb": metrics["memory_gb"],
+            "time_days": metrics["training_days"],
+            "accuracy": metrics["accuracy_retention"],
+            "cost_usd": metrics["cost_usd"],
+            "speedup_vs_fp32": metrics["speedup_vs_fp32"],
+        }
+
+        # Check constraints
+        mem_ok = result["memory_gb"] <= constraints["memory_budget_gb"]
+        time_ok = result["time_days"] <= constraints["time_budget_days"]
+        acc_ok = result["accuracy"] >= constraints["accuracy_threshold"]
+
+        if not (mem_ok and time_ok and acc_ok):
+            fails = []
+            if not mem_ok: fails.append(f"Memory {result['memory_gb']}GB > {constraints['memory_budget_gb']}GB")
+            if not time_ok: fails.append(f"Time {result['time_days']}d > {constraints['time_budget_days']}d")
+            if not acc_ok: fails.append(f"Accuracy {result['accuracy']} < {constraints['accuracy_threshold']}")
+            score = 0.0
+            feedback = f"Transfer FAILED — constraints violated: {'; '.join(fails)}. {s['iterations_left']} attempts remaining."
+        else:
+            # Score = base (0.4) + adaptation quality bonuses
+            # Bonus 1: efficiency (how much headroom is used well)
+            mem_eff = 1.0 - (result["memory_gb"] / constraints["memory_budget_gb"])
+            time_eff = 1.0 - (result["time_days"] / constraints["time_budget_days"])
+            acc_margin = (result["accuracy"] - constraints["accuracy_threshold"]) / max(0.001, 1.0 - constraints["accuracy_threshold"])
+
+            # Bonus 2: did the agent actually CHANGE the strategy vs source?
+            source_config = sc["source_model"]["working_config"]
+            changes = sum(1 for k in strategy if strategy.get(k) != source_config.get(k))
+            adaptation_bonus = min(0.15, changes * 0.05)  # Up to 0.15 for 3+ changes
+
+            base = 0.4
+            efficiency = 0.2 * mem_eff + 0.15 * time_eff + 0.1 * min(1.0, acc_margin)
+            score = round(min(1.0, max(0.0, base + efficiency + adaptation_bonus)), 3)
+
+            feedback = (
+                f"Transfer OK! Mem={result['memory_gb']}GB, Time={result['time_days']}d, "
+                f"Acc={result['accuracy']}, Speedup={result['speedup_vs_fp32']}x. "
+                f"Changes from source: {changes} layer(s) modified. "
+                f"Score={score}. {s['iterations_left']} attempts left."
+            )
+
+        if score > s["best_score"]:
+            s["best_score"] = score
+        s["best_result"] = result
+        s["prev_feedback"] = feedback
+
+        done = s["iterations_left"] <= 0
+        if done:
+            self.is_done = True
+        self.history.append({"step": self.step_number, "strategy": strategy, "result": result, "score": score})
+
+        next_obs = None if done else self._task4_observation()
+        return {"observation": next_obs, "reward": {"score": score, "feedback": feedback}, "done": done, "info": {"computed_metrics": result}}
+
