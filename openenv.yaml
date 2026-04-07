@@ -67,8 +67,8 @@ tasks:
           description: "Optional explanation for the choice"
     reward:
       type: number
-      minimum: 0.0
-      maximum: 1.0
+      minimum: 0.01
+      maximum: 0.99
       description: >
         Per-step reward. 0.0 for catastrophic choices (NaN/underflow). Partial
         credit for safe but suboptimal choices. 1.0 for the ideal precision given
@@ -123,8 +123,8 @@ tasks:
           description: "Suspected precision failure cause (e.g. 'fp8 embedding underflow')"
     reward:
       type: number
-      minimum: 0.0
-      maximum: 1.0
+      minimum: 0.01
+      maximum: 0.99
       description: >
         Partial reward each step. Penalizes false positives. Rewards early and
         accurate flagging. Bonus for matching root cause keywords.
@@ -181,8 +181,8 @@ tasks:
           type: string
     reward:
       type: number
-      minimum: 0.0
-      maximum: 1.0
+      minimum: 0.01
+      maximum: 0.99
       description: >
         0.0 if any hard constraint is violated. Otherwise scored on how
         close the solution is to the Pareto-optimal frontier (max efficiency
@@ -249,8 +249,8 @@ tasks:
           type: string
     reward:
       type: number
-      minimum: 0.0
-      maximum: 1.0
+      minimum: 0.01
+      maximum: 0.99
       description: >
         0.0 if any constraint is violated. Base 0.4 for valid transfer, plus
         bonuses for efficiency and intelligent adaptation (changing layers that
@@ -280,34 +280,34 @@ graders:
     implementation: environment/mixed_precision_env.py
     description: "Physics-based stability and efficiency scoring per layer type"
     deterministic: true
-    score_range: [0.0, 1.0]
+    score_range: [0.01, 0.99]
 
   - id: instability_detection_grader
     type: deterministic
     implementation: environment/mixed_precision_env.py
     description: "Trajectory window analysis with partial credit for timing and root cause"
     deterministic: true
-    score_range: [0.0, 1.0]
+    score_range: [0.01, 0.99]
 
   - id: multi_objective_grader
     type: deterministic
     implementation: environment/mixed_precision_env.py
     description: "Constraint satisfaction + Pareto distance scoring"
     deterministic: true
-    score_range: [0.0, 1.0]
+    score_range: [0.01, 0.99]
 
   - id: precision_transfer_grader
     type: deterministic
     implementation: environment/mixed_precision_env.py
     description: "Transfer quality scoring — constraint satisfaction + adaptation intelligence"
     deterministic: true
-    score_range: [0.0, 1.0]
+    score_range: [0.01, 0.99]
 
 baseline:
   script: inference.py
   description: "LLM agent using OpenAI-compatible API with conversation history"
   expected_scores:
-    precision_assignment: 1.00
+    precision_assignment: 0.99
     instability_detection: 0.65
     multi_objective_optimization: 0.72
     precision_transfer: 0.65

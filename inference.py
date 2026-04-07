@@ -156,7 +156,7 @@ def run_task(task_id: str):
         obs = res.json()["observation"]
     except Exception as e:
         print(f"Error connecting to env: {e}", flush=True)
-        return 0.0, 0
+        return 0.01, 0
 
     print(f"[START] task={task_id} env=mixed_precision_env model={MODEL_NAME}", flush=True)
 
@@ -171,7 +171,7 @@ def run_task(task_id: str):
         
         error = None
         done = False
-        reward = 0.0
+        reward = 0.01
 
         if action is None:
             action = {}

@@ -4,6 +4,12 @@ Each task is an episode with multiple steps and per-step rewards.
 Physics model grounded in real benchmarks — see environment/physics_model.py
 """
 from typing import Dict, Any, Optional
+
+
+def clamp_score(score: float) -> float:
+    """Clamp score to the open interval (0, 1) — strictly between 0.0 and 1.0.
+    OpenEnv Phase 2 validation requires scores != 0.0 and != 1.0."""
+    return max(0.01, min(0.99, score))
 from scenarios.loader import ScenarioLoader
 from scenarios.task2_scenarios import WINDOW_SIZE
 from environment.physics_model import (
@@ -54,7 +60,7 @@ class MixedPrecisionEnvironment:
 
     def step(self, action: Dict[str, Any]) -> Dict[str, Any]:
         if self.is_done:
-            return {"observation": None, "reward": {"score": 0.0, "feedback": "Episode finished. Call /reset."}, "done": True, "info": {}}
+            return {"observation": None, "reward": {"score": 0.01, "feedback": "Episode finished. Call /reset."}, "done": True, "info": {}}
         if self.current_task == "precision_assignment":
             return self._step_task1(action)
         elif self.current_task == "instability_detection":
@@ -63,7 +69,7 @@ class MixedPrecisionEnvironment:
             return self._step_task3(action)
         elif self.current_task == "precision_transfer":
             return self._step_task4(action)
-        return {"observation": None, "reward": {"score": 0.0, "feedback": "No active task."}, "done": True, "info": {}}
+        return {"observation": None, "reward": {"score": 0.01, "feedback": "No active task."}, "done": True, "info": {}}
 
     def state(self) -> Dict[str, Any]:
         return {
@@ -107,6 +113,7 @@ class MixedPrecisionEnvironment:
 
         # Use real empirical scoring from physics_model.py
         score, feedback = score_precision_layer(layer_type, precision)
+        score = clamp_score(score)
 
         mem_added = (layer["num_params"] * BYTES_PER_PARAM[precision]) / 1e9
         s["memory_used_gb"] += mem_added
@@ -134,12 +141,12 @@ class MixedPrecisionEnvironment:
                 "avg_speedup_vs_fp32": round(avg_speedup, 2),
             }
             if s["memory_used_gb"] > self.scenario["memory_budget_gb"]:
-                score = max(0.0, score - 0.3)
+                score = clamp_score(score - 0.3)
                 feedback += f" | WARNING: Total memory {s['memory_used_gb']:.1f}GB exceeds budget {self.scenario['memory_budget_gb']}GB!"
             feedback += f" | Est. savings vs FP32: ${savings:,.0f} ({(savings/fp32_cost*100):.0f}%)"
 
         next_obs = None if done else self._task1_observation()
-        return {"observation": next_obs, "reward": {"score": score, "feedback": feedback}, "done": done, "info": info}
+        return {"observation": next_obs, "reward": {"score": clamp_score(score), "feedback": feedback}, "done": done, "info": info}
 
     # ── Task 2: Progressive instability detection ──
     def _reset_task2(self) -> Dict[str, Any]:
@@ -183,7 +190,7 @@ class MixedPrecisionEnvironment:
                     score = 0.1
                     feedback = "Missed the instability entirely. The training crashed but you never flagged it."
                 else:
-                    score = 1.0
+                    score = 0.99
                     feedback = "Correctly monitored entire trajectory. No instability found — correct!"
             else:
                 current_window = self.scenario["training_loss_trajectory"][s["window_idx"]*WINDOW_SIZE:(s["window_idx"]+1)*WINDOW_SIZE]
@@ -197,6 +204,7 @@ class MixedPrecisionEnvironment:
                     feedback = f"Window {s['window_idx']}: Monitoring continues. Loss looks {'stable' if not gt['is_unstable'] else 'watch carefully'}."
                 self.is_done = False
 
+        score = clamp_score(score)
         self.history.append({"step": self.step_number, "action": action_type, "score": score})
         next_obs = None if self.is_done else self._task2_observation()
         return {"observation": next_obs, "reward": {"score": score, "feedback": feedback}, "done": self.is_done, "info": {}}
@@ -229,7 +237,7 @@ class MixedPrecisionEnvironment:
             score += round(cause_score, 2)
             parts.append(f"Root cause: matched {matches}/{len(gt['cause_keywords'])} keywords (+{round(cause_score, 2)}).")
 
-        return min(1.0, round(score, 3)), " ".join(parts)
+        return clamp_score(round(score, 3)), " ".join(parts)
 
     # ── Task 3: Iterative multi-objective optimization ──
     def _reset_task3(self) -> Dict[str, Any]:
@@ -286,7 +294,7 @@ class MixedPrecisionEnvironment:
             if not mem_ok: fails.append(f"Memory {result['memory_gb']}GB > {constraints['memory_budget_gb']}GB")
             if not time_ok: fails.append(f"Time {result['time_days']}d > {constraints['time_budget_days']}d")
             if not acc_ok: fails.append(f"Accuracy {result['accuracy']} < {constraints['accuracy_threshold']}")
-            score = 0.0
+            score = 0.01
             feedback = (
                 f"Constraints violated: {'; '.join(fails)}. "
                 f"[Empirical model: NVIDIA-TE + Meta-LLaMA3] "
@@ -297,7 +305,7 @@ class MixedPrecisionEnvironment:
             time_eff = 1.0 - (result["time_days"] / constraints["time_budget_days"])
             acc_margin = (result["accuracy"] - constraints["accuracy_threshold"]) / max(0.001, 1.0 - constraints["accuracy_threshold"])
             score = round(0.5 + 0.2 * mem_eff + 0.15 * time_eff + 0.15 * min(1.0, acc_margin), 3)
-            score = min(1.0, max(0.0, score))
+            score = clamp_score(score)
             feedback = (
                 f"Valid! Mem={result['memory_gb']}GB, Time={result['time_days']}d, "
                 f"Acc={result['accuracy']}, Speedup={result['speedup_vs_fp32']}x vs FP32. "
@@ -314,6 +322,7 @@ class MixedPrecisionEnvironment:
         done = s["iterations_left"] <= 0
         if done:
             self.is_done = True
+        score = clamp_score(score)
         self.history.append({"step": self.step_number, "strategy": strategy, "result": result, "score": score})
 
         next_obs = None if done else self._task3_observation()
@@ -384,7 +393,7 @@ class MixedPrecisionEnvironment:
             if not mem_ok: fails.append(f"Memory {result['memory_gb']}GB > {constraints['memory_budget_gb']}GB")
             if not time_ok: fails.append(f"Time {result['time_days']}d > {constraints['time_budget_days']}d")
             if not acc_ok: fails.append(f"Accuracy {result['accuracy']} < {constraints['accuracy_threshold']}")
-            score = 0.0
+            score = 0.01
             feedback = f"Transfer FAILED — constraints violated: {'; '.join(fails)}. {s['iterations_left']} attempts remaining."
         else:
             # Score = base (0.4) + adaptation quality bonuses
@@ -400,7 +409,7 @@ class MixedPrecisionEnvironment:
 
             base = 0.4
             efficiency = 0.2 * mem_eff + 0.15 * time_eff + 0.1 * min(1.0, acc_margin)
-            score = round(min(1.0, max(0.0, base + efficiency + adaptation_bonus)), 3)
+            score = clamp_score(round(base + efficiency + adaptation_bonus, 3))
 
             feedback = (
                 f"Transfer OK! Mem={result['memory_gb']}GB, Time={result['time_days']}d, "
@@ -417,6 +426,7 @@ class MixedPrecisionEnvironment:
         done = s["iterations_left"] <= 0
         if done:
             self.is_done = True
+        score = clamp_score(score)
         self.history.append({"step": self.step_number, "strategy": strategy, "result": result, "score": score})
 
         next_obs = None if done else self._task4_observation()

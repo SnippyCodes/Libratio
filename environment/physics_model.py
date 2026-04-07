@@ -272,7 +272,7 @@ def score_precision_layer(layer_type: str, precision: str) -> tuple[float, str]:
 
     # Crash/Highly unstable: return immediately
     if stability < 0.5:
-        return 0.0, (
+        return 0.01, (
             f"CRITICAL: {precision} on {layer_type} — {stability:.0%} stability. "
             f"Training will likely crash (NaN/gradient underflow). "
             f"[Source: NVIDIA-FP8-2022 / Micikevicius2018]"
@@ -281,7 +281,7 @@ def score_precision_layer(layer_type: str, precision: str) -> tuple[float, str]:
     ideal = IDEAL.get(layer_type, "BF16")
 
     if precision == ideal:
-        score = 1.00
+        score = 0.99
         verdict = "Perfect — optimal precision for this layer type"
     elif stability >= 0.85:
         # Safe but suboptimal (e.g., BF16 on embedding instead of FP32)
