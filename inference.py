@@ -222,7 +222,7 @@ def run_task(task_id: str):
     success_str = str(success).lower()
     rewards_str = ",".join(f"{r:.2f}" for r in rewards_list)
 
-    print(f"[END] success={success_str} steps={steps} rewards={rewards_str}", flush=True)
+    print(f"[END] success={success_str} steps={steps} score={score:.2f} rewards={rewards_str}", flush=True)
     return score, steps
 
 
