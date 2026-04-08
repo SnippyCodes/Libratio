@@ -45,10 +45,13 @@ def reset_environment(payload: dict = {}):
 def step_environment(payload: dict = {}):
     action = payload.get("action", payload)
     result = env.step(action)
+    # Defense-in-depth: clamp score to strict (0, 1) open interval
+    raw_score = result["reward"]["score"]
+    clamped_score = max(0.01, min(0.99, float(raw_score)))
     return StepResponse(
         observation=result["observation"],
         reward=RewardPayload(
-            score=result["reward"]["score"],
+            score=clamped_score,
             feedback=result["reward"]["feedback"],
         ),
         done=result["done"],

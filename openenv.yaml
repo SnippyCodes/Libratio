@@ -70,9 +70,9 @@ tasks:
       minimum: 0.01
       maximum: 0.99
       description: >
-        Per-step reward. 0.0 for catastrophic choices (NaN/underflow). Partial
-        credit for safe but suboptimal choices. 1.0 for the ideal precision given
-        the layer type.
+        Per-step reward in (0.01, 0.99). Catastrophic choices (NaN/underflow)
+        receive 0.01. Partial credit for safe but suboptimal choices. Ideal
+        precision for the layer type scores 0.99.
 
   - id: instability_detection
     description: >
@@ -126,8 +126,9 @@ tasks:
       minimum: 0.01
       maximum: 0.99
       description: >
-        Partial reward each step. Penalizes false positives. Rewards early and
-        accurate flagging. Bonus for matching root cause keywords.
+        Partial reward each step in (0.01, 0.99). Penalizes false positives
+        with low scores. Rewards early and accurate flagging. Bonus for
+        matching root cause keywords.
 
   - id: multi_objective_optimization
     description: >
@@ -184,9 +185,10 @@ tasks:
       minimum: 0.01
       maximum: 0.99
       description: >
-        0.0 if any hard constraint is violated. Otherwise scored on how
-        close the solution is to the Pareto-optimal frontier (max efficiency
-        within constraints). Score improves each iteration the agent refines.
+        Score of 0.01 if any hard constraint is violated. Otherwise scored
+        in (0.01, 0.99) based on how close the solution is to the
+        Pareto-optimal frontier (max efficiency within constraints). Score
+        improves each iteration the agent refines.
 
   - id: precision_transfer
     description: >
@@ -252,9 +254,10 @@ tasks:
       minimum: 0.01
       maximum: 0.99
       description: >
-        0.0 if any constraint is violated. Base 0.4 for valid transfer, plus
-        bonuses for efficiency and intelligent adaptation (changing layers that
-        need it rather than blindly copying).
+        Score of 0.01 if any constraint is violated. Base 0.4 for valid
+        transfer, plus bonuses for efficiency and intelligent adaptation
+        (changing layers that need it rather than blindly copying). All
+        scores clamped to (0.01, 0.99).
 
 endpoints:
   reset:

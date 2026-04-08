@@ -19,6 +19,11 @@ ENV_URL = os.getenv("ENV_URL", "http://localhost:7860")
 
 client = OpenAI(api_key=HF_TOKEN, base_url=API_BASE_URL)
 
+
+def clamp_reward(r: float) -> float:
+    """Ensure every reward is strictly in the open interval (0, 1)."""
+    return max(0.01, min(0.99, float(r)))
+
 TASK_SYSTEM_PROMPTS = {
     "precision_assignment": """You are an expert ML infrastructure engineer configuring mixed-precision training.
 You will be shown ONE layer at a time from a neural network. Assign a precision format to it.
@@ -171,7 +176,7 @@ def run_task(task_id: str):
         
         error = None
         done = False
-        reward = 0.01
+        reward = 0.01  # default safe value in (0, 1)
 
         if action is None:
             action = {}
@@ -187,7 +192,7 @@ def run_task(task_id: str):
                 step_res = httpx.post(f"{ENV_URL}/step", json={"action": action})
                 data = step_res.json()
 
-                reward = data["reward"]["score"]
+                reward = clamp_reward(data["reward"]["score"])
                 feedback = data["reward"]["feedback"]
                 done = data["done"]
                 obs = data.get("observation", None)
@@ -201,7 +206,7 @@ def run_task(task_id: str):
                 done = True
                 error = f"env error: {str(e)}"
 
-        rewards_list.append(reward)
+        rewards_list.append(clamp_reward(reward))
         action_str = json.dumps(action, default=str).replace('\\n', ' ')
         error_str = error if error else "null"
         done_str = str(done).lower()
@@ -211,7 +216,7 @@ def run_task(task_id: str):
         if done:
             break
 
-    score = sum(rewards_list) / max(steps, 1)
+    score = clamp_reward(sum(rewards_list) / max(steps, 1))
     # Define a simple threshold for success
     success = score >= 0.70
     success_str = str(success).lower()

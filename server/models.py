@@ -124,7 +124,7 @@ class Task4Action(BaseModel):
 # Universal Response Models (OpenEnv Spec)
 # ──────────────────────────────────────────────
 class RewardPayload(BaseModel):
-    score: float = Field(..., ge=0.0, le=1.0, description="Normalized score 0.0-1.0")
+    score: float = Field(..., gt=0.0, lt=1.0, description="Normalized score strictly in (0, 1)")
     feedback: str = Field(..., description="Human-readable grading explanation")
 
 
