@@ -9,7 +9,11 @@ from typing import Dict, Any, Optional
 def clamp_score(score: float) -> float:
     """Clamp score to the open interval (0, 1) — strictly between 0.0 and 1.0.
     OpenEnv Phase 2 validation requires scores != 0.0 and != 1.0."""
-    return max(0.01, min(0.99, score))
+    try:
+        val = float(score)
+    except (ValueError, TypeError):
+        val = 0.01
+    return float(max(0.001, min(0.999, val)))
 from scenarios.loader import ScenarioLoader
 from scenarios.task2_scenarios import WINDOW_SIZE
 from environment.physics_model import (

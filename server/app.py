@@ -46,8 +46,11 @@ def step_environment(payload: dict = {}):
     action = payload.get("action", payload)
     result = env.step(action)
     # Defense-in-depth: clamp score to strict (0, 1) open interval
-    raw_score = result["reward"]["score"]
-    clamped_score = max(0.01, min(0.99, float(raw_score)))
+    try:
+        raw_score = float(result["reward"]["score"])
+    except (ValueError, TypeError):
+        raw_score = 0.01
+    clamped_score = float(max(0.001, min(0.999, raw_score)))
     return StepResponse(
         observation=result["observation"],
         reward=RewardPayload(

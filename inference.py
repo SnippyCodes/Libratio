@@ -21,8 +21,13 @@ client = OpenAI(api_key=HF_TOKEN, base_url=API_BASE_URL)
 
 
 def clamp_reward(r: float) -> float:
-    """Ensure every reward is strictly in the open interval (0, 1)."""
-    return max(0.01, min(0.99, float(r)))
+    """Ensure every reward is strictly in the open interval (0, 1) and is a pure float."""
+    try:
+        val = float(r)
+    except (ValueError, TypeError):
+        val = 0.01
+    val = float(max(0.001, min(0.999, val)))
+    return val
 
 TASK_SYSTEM_PROMPTS = {
     "precision_assignment": """You are an expert ML infrastructure engineer configuring mixed-precision training.
@@ -222,7 +227,8 @@ def run_task(task_id: str):
     success_str = str(success).lower()
     rewards_str = ",".join(f"{r:.2f}" for r in rewards_list)
 
-    print(f"[END] success={success_str} steps={steps} score={score:.2f} rewards={rewards_str}", flush=True)
+    print(f"GRADE: {score} {type(score)}", flush=True)
+    print(f"[END] success={success_str} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
     return score, steps
 
 
