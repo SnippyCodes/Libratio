@@ -24,7 +24,7 @@ A **multi-agent** reinforcement learning environment simulating the highest-stak
 ---
 
 ## Hackathon Submission Links
-- **Hugging Face Space**: [Insert Space URL Here]
+- **Hugging Face Space**: [https://huggingface.co/spaces/SnippyCodes/Libratio](https://huggingface.co/spaces/SnippyCodes/Libratio)
 - **2-Minute Demo Video**: [Insert YouTube URL Here]
 - **Training Script (Colab)**: [Run in Google Colab](https://colab.research.google.com/drive/1O74FkE8YCkren_sJHmx_p0i3hLAQ9Ylv)
 
