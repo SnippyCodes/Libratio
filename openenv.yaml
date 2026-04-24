@@ -1,85 +1,26 @@
-name: mixed-precision-training-env
-version: "2.0.0"
+name: libratio-fleet
+version: "3.0.0"
 description: >
-  A reinforcement learning environment simulating the real-world ML engineering
-  task of configuring mixed-precision training (FP32/BF16/FP16/FP8) for large
-  neural networks. Agents learn to assign precision formats layer-by-layer,
-  detect training instability from loss trajectories, and optimize memory/time/
-  accuracy trade-offs under hard constraints — exactly the decisions that Meta
-  engineers face when training models like LLaMA at scale.
+  A multi-agent reinforcement learning environment simulating GPU fleet
+  management for large-scale AI training. Multiple agents cooperate and
+  compete to configure mixed-precision training across a shared GPU cluster,
+  while an oversight agent monitors all runs for instability — directly
+  modeling the infrastructure challenges Meta engineers face when training
+  LLaMA at scale.
+
+  Theme: Multi-Agent Interactions + Fleet AI (Scalable Oversight)
 
 author: "Aaryan"
-tags: ["ml-engineering", "mixed-precision", "llm-training", "optimization"]
+tags: ["multi-agent", "fleet-ai", "gpu-cluster", "mixed-precision", "oversight", "reinforcement-learning"]
 
 tasks:
-  - id: precision_assignment
+  - id: fleet_precision
     description: >
-      Assign a floating-point precision format (FP32, BF16, FP16, or FP8) to
-      each layer of a given neural network architecture, one layer at a time.
-      The agent receives per-step rewards based on stability and efficiency of
-      each choice. Catastrophic choices (e.g. FP8 on embedding layers) result
-      in an immediate score of 0.0.
-    difficulty: easy
-    max_steps: 5
-    observation_space:
-      type: dict
-      properties:
-        task_id:
-          type: string
-          enum: ["precision_assignment"]
-        scenario_id:
-          type: string
-        model_name:
-          type: string
-        total_layers:
-          type: integer
-        current_layer_index:
-          type: integer
-        current_layer:
-          type: dict
-          properties:
-            name: {type: string}
-            layer_type: {type: string, enum: ["embedding", "attention", "ffn", "layernorm", "output"]}
-            num_params: {type: integer}
-            gradient_sensitivity: {type: string}
-            activation_range: {type: string}
-        assigned_so_far:
-          type: dict
-          description: "Layer name → precision format already assigned"
-        available_precisions:
-          type: array
-          items: {type: string, enum: ["FP32", "BF16", "FP16", "FP8"]}
-        memory_budget_gb:
-          type: number
-        memory_used_gb:
-          type: number
-        speed_target_speedup:
-          type: number
-    action_space:
-      type: dict
-      properties:
-        precision:
-          type: string
-          enum: ["FP32", "BF16", "FP16", "FP8"]
-          description: "The precision format to assign to the current layer"
-        reasoning:
-          type: string
-          description: "Optional explanation for the choice"
-    reward:
-      type: number
-      minimum: 0.01
-      maximum: 0.99
-      description: >
-        Per-step reward in (0.01, 0.99). Catastrophic choices (NaN/underflow)
-        receive 0.01. Partial credit for safe but suboptimal choices. Ideal
-        precision for the layer type scores 0.99.
-
-  - id: instability_detection
-    description: >
-      Progressively analyze windows of a training loss trajectory to detect
-      precision-induced instability. The agent can continue monitoring or flag
-      the run as unstable with a root cause analysis. Rewards increase for
-      detecting crashes early and correctly identifying the culprit layer/precision.
+      Multiple training agents assign floating-point precision formats to their
+      models' layers, sharing a common GPU memory pool. Each agent configures
+      one model per step, seeing what other agents have already allocated.
+      Agents must balance their model's performance with fleet-wide resource
+      fairness under a shared memory budget.
     difficulty: medium
     max_steps: 5
     observation_space:
@@ -87,21 +28,81 @@ tasks:
       properties:
         task_id:
           type: string
-          enum: ["instability_detection"]
+          enum: ["fleet_precision"]
         scenario_id:
           type: string
-        precision_config:
+        cluster:
           type: dict
-          description: "Current precision configuration of the model"
+          properties:
+            total_gpus: {type: integer}
+            total_memory_gb: {type: number}
+            memory_used_gb: {type: number}
+            memory_remaining_gb: {type: number}
+        your_model:
+          type: dict
+          properties:
+            model_id: {type: string}
+            name: {type: string}
+            total_params: {type: integer}
+            layer_distribution: {type: dict}
+            priority: {type: integer}
+            priority_reason: {type: string}
+        other_agents:
+          type: dict
+          description: "What other agents have configured so far"
+        agents_remaining:
+          type: integer
+        available_precisions:
+          type: array
+          items: {type: string, enum: ["FP32", "BF16", "FP16", "FP8"]}
+    action_space:
+      type: dict
+      properties:
+        precision_strategy:
+          type: dict
+          description: "Mapping of layer_type to precision format"
+          example:
+            embedding: "FP32"
+            attention: "BF16"
+            ffn: "FP8"
+            layernorm: "BF16"
+            output: "FP32"
+        reasoning:
+          type: string
+    reward:
+      type: number
+      minimum: 0.01
+      maximum: 0.99
+      description: >
+        Per-agent score based on layer precision quality (using empirical
+        physics model), memory fairness vs fair share, and fleet-wide
+        stability. Fleet bonus/penalty applied on final step.
+
+  - id: fleet_oversight
+    description: >
+      An oversight agent monitors loss trajectories from ALL simultaneous
+      training runs in the GPU cluster. Must identify WHICH model is crashing,
+      WHEN the crash started, and WHY (root cause from precision config).
+      This is the Fleet AI task — training agents to oversee other AI agents.
+    difficulty: hard
+    max_steps: 5
+    observation_space:
+      type: dict
+      properties:
+        task_id:
+          type: string
+          enum: ["fleet_oversight"]
+        scenario_id:
+          type: string
+        num_models:
+          type: integer
+        model_trajectories:
+          type: dict
+          description: "Per-model loss windows and precision configs"
         total_training_steps:
           type: integer
         steps_revealed_so_far:
           type: integer
-        loss_trajectory_window:
-          type: array
-          items:
-            type: ["number", "null"]
-            description: "null indicates NaN (training crash)"
         window_index:
           type: integer
         windows_remaining:
@@ -114,28 +115,30 @@ tasks:
           enum: ["continue_monitoring", "flag_instability"]
         analysis:
           type: string
-          description: "Agent's running commentary on what it observes"
+        flagged_model:
+          type: ["string", "null"]
+          description: "Which model_id is crashing"
         flagged_step:
           type: ["integer", "null"]
-          description: "Training step where instability occurred (required if flagging)"
+          description: "Training step where instability started"
         root_cause:
           type: ["string", "null"]
-          description: "Suspected precision failure cause (e.g. 'fp8 embedding underflow')"
+          description: "Suspected precision failure cause"
     reward:
       type: number
       minimum: 0.01
       maximum: 0.99
       description: >
-        Partial reward each step in (0.01, 0.99). Penalizes false positives
-        with low scores. Rewards early and accurate flagging. Bonus for
-        matching root cause keywords.
+        Correct model identification (+0.25), correct step timing (+0.20),
+        correct root cause (+0.25), base detection (+0.30). False alarm = 0.10.
+        Missed crash = 0.10.
 
-  - id: multi_objective_optimization
+  - id: fleet_resource
     description: >
-      Iteratively refine a precision strategy under hard memory, time, and
-      accuracy constraints. The environment simulates the full model and returns
-      computed metrics each iteration. Agents get up to 5 iterations to converge
-      on a Pareto-optimal configuration.
+      Agent allocates GPUs from a shared cluster across multiple competing
+      training jobs, considering each model's parameter count, priority level,
+      and precision strategy. Must balance cost efficiency, GPU utilization,
+      and priority alignment over multiple iterations.
     difficulty: hard
     max_steps: 5
     observation_space:
@@ -143,41 +146,47 @@ tasks:
       properties:
         task_id:
           type: string
-          enum: ["multi_objective_optimization"]
+          enum: ["fleet_resource"]
         scenario_id:
           type: string
-        constraints:
+        cluster:
           type: dict
           properties:
-            memory_budget_gb: {type: number}
-            time_budget_days: {type: number}
-            accuracy_threshold: {type: number}
-        model_total_params:
-          type: integer
-        layer_types:
+            total_gpus: {type: integer}
+            gpu_memory_gb: {type: number}
+            total_memory_gb: {type: number}
+            cost_per_gpu_hour_usd: {type: number}
+        models:
           type: array
-          items: {type: string}
+          items:
+            type: dict
+            properties:
+              model_id: {type: string}
+              name: {type: string}
+              total_params: {type: integer}
+              priority: {type: integer}
+              priority_reason: {type: string}
         iterations_remaining:
           type: integer
         best_score_so_far:
           type: number
         previous_result:
           type: ["dict", "null"]
-          description: "Computed metrics from the last iteration"
         previous_feedback:
           type: ["string", "null"]
     action_space:
       type: dict
       properties:
-        precision_strategy:
+        allocations:
           type: dict
-          description: "Mapping of layer_type → precision format"
+          description: "Per-model GPU allocation and precision strategy"
           example:
-            embedding: "FP32"
-            attention: "BF16"
-            ffn: "FP8"
-            layernorm: "BF16"
-            output: "FP32"
+            model_a:
+              gpus: 4
+              precision_strategy: {"embedding": "FP32", "attention": "BF16", "ffn": "FP8", "layernorm": "BF16", "output": "FP32"}
+            model_b:
+              gpus: 4
+              precision_strategy: {"embedding": "FP32", "attention": "BF16", "ffn": "FP8", "layernorm": "BF16", "output": "FP32"}
         reasoning:
           type: string
     reward:
@@ -185,18 +194,16 @@ tasks:
       minimum: 0.01
       maximum: 0.99
       description: >
-        Score of 0.01 if any hard constraint is violated. Otherwise scored
-        in (0.01, 0.99) based on how close the solution is to the
-        Pareto-optimal frontier (max efficiency within constraints). Score
-        improves each iteration the agent refines.
+        Scored on cost efficiency (30%), GPU utilization (25%), priority
+        alignment (25%), base validity (10%), and stability bonus (10%).
+        Invalid allocations (GPU overflow, memory overflow) score 0.01.
 
-  - id: precision_transfer
+  - id: fleet_recovery
     description: >
-      Adapt a working precision configuration from a source model architecture
-      to a target model with different parameter count, layer distribution, and
-      constraints. The agent must reason about how scale and architecture changes
-      affect precision requirements, rather than blindly copying the source config.
-      Bonus points for intelligent adaptation (changing layers that need it).
+      A model in the GPU cluster has crashed mid-training. Agent must diagnose
+      the root cause (phase 1), propose a new safe precision strategy (phase 2),
+      and verify the recovery plan (phase 3). Tests incident response and
+      causal reasoning under pressure.
     difficulty: medium-hard
     max_steps: 3
     observation_space:
@@ -204,114 +211,93 @@ tasks:
       properties:
         task_id:
           type: string
-          enum: ["precision_transfer"]
+          enum: ["fleet_recovery"]
         scenario_id:
           type: string
-        source_model:
+        phase:
+          type: string
+          enum: ["diagnose", "reallocate", "verify"]
+        cluster:
+          type: dict
+        models:
+          type: array
+          items:
+            type: dict
+        crashed_model:
           type: dict
           properties:
-            name: {type: string}
-            total_params: {type: integer}
-            layer_distribution: {type: dict}
-            working_config: {type: dict, description: "Precision config that works on source"}
-            metrics: {type: dict, description: "Performance metrics achieved with working_config"}
-        target_model:
-          type: dict
-          properties:
-            name: {type: string}
-            total_params: {type: integer}
-            layer_distribution: {type: dict}
-            constraints:
-              type: dict
-              properties:
-                memory_budget_gb: {type: number}
-                time_budget_days: {type: number}
-                accuracy_threshold: {type: number}
+            model_id: {type: string}
+            crash_step: {type: integer}
+            loss_around_crash: {type: array}
+            precision_config: {type: dict}
         iterations_remaining:
           type: integer
-        best_score_so_far:
-          type: number
-        previous_result:
-          type: ["dict", "null"]
         previous_feedback:
           type: ["string", "null"]
     action_space:
       type: dict
-      properties:
-        precision_strategy:
-          type: dict
-          description: "Mapping of layer_type to precision format for the TARGET model"
-          example:
-            embedding: "FP32"
-            attention: "BF16"
-            ffn: "FP8"
-            layernorm: "BF16"
-            output: "FP32"
-        reasoning:
-          type: string
+      description: "Phase-dependent action — see fleet_recovery task description"
     reward:
       type: number
       minimum: 0.01
       maximum: 0.99
       description: >
-        Score of 0.01 if any constraint is violated. Base 0.4 for valid
-        transfer, plus bonuses for efficiency and intelligent adaptation
-        (changing layers that need it rather than blindly copying). All
-        scores clamped to (0.01, 0.99).
+        Phase 1 (diagnose): correct model ID (+0.30), root cause keywords (+0.50).
+        Phase 2 (reallocate): stable config (+0.40), changes from crashed config (+0.20).
+        Phase 3 (verify): reasoning quality (+0.20), monitoring plan (+0.10).
 
 endpoints:
   reset:
     method: POST
-    path: /reset
-    description: "Start a new episode for a given task. Body: {task_id: string}"
+    path: /fleet/reset
+    description: "Start a new fleet episode. Body: {task_id: string}"
   step:
     method: POST
-    path: /step
+    path: /fleet/step
     description: "Submit an action. Body: {action: dict}"
   state:
     method: POST
-    path: /state
-    description: "Get current environment state without advancing it"
+    path: /fleet/state
+    description: "Get current fleet state"
   tasks:
     method: GET
-    path: /tasks
-    description: "List all available tasks with metadata"
+    path: /fleet/tasks
+    description: "List all fleet tasks"
 
 graders:
-  - id: precision_assignment_grader
+  - id: fleet_precision_grader
     type: deterministic
-    implementation: environment/mixed_precision_env.py
-    description: "Physics-based stability and efficiency scoring per layer type"
+    implementation: environment/fleet_env.py
+    description: "Physics-based scoring per agent + fleet-wide memory/stability evaluation"
     deterministic: true
     score_range: [0.01, 0.99]
 
-  - id: instability_detection_grader
+  - id: fleet_oversight_grader
     type: deterministic
-    implementation: environment/mixed_precision_env.py
-    description: "Trajectory window analysis with partial credit for timing and root cause"
+    implementation: environment/fleet_env.py
+    description: "Multi-model crash detection scoring — model ID, timing, and root cause"
     deterministic: true
     score_range: [0.01, 0.99]
 
-  - id: multi_objective_grader
+  - id: fleet_resource_grader
     type: deterministic
-    implementation: environment/mixed_precision_env.py
-    description: "Constraint satisfaction + Pareto distance scoring"
+    implementation: environment/fleet_env.py
+    description: "Cost efficiency + utilization + priority alignment scoring"
     deterministic: true
     score_range: [0.01, 0.99]
 
-  - id: precision_transfer_grader
+  - id: fleet_recovery_grader
     type: deterministic
-    implementation: environment/mixed_precision_env.py
-    description: "Transfer quality scoring — constraint satisfaction + adaptation intelligence"
+    implementation: environment/fleet_env.py
+    description: "3-phase recovery scoring — diagnosis, reallocation, verification"
     deterministic: true
     score_range: [0.01, 0.99]
 
 baseline:
-  script: inference.py
-  description: "LLM agent using OpenAI-compatible API with conversation history"
+  script: fleet_inference.py
+  description: "Multi-agent LLM inference using Groq API with per-agent conversation history"
   expected_scores:
-    precision_assignment: 0.99
-    instability_detection: 0.65
-    multi_objective_optimization: 0.72
-    precision_transfer: 0.65
-
+    fleet_precision: 0.99
+    fleet_oversight: 0.83
+    fleet_resource: 0.91
+    fleet_recovery: 0.80
