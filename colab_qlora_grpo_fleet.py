@@ -195,7 +195,7 @@ cfg = GRPOConfig(
 trainer = GRPOTrainer(
     model=model,
     tokenizer=tokenizer,
-    config=cfg,
+    args=cfg,
     train_dataset=ds,
     reward_funcs=[fleet_reward_function],
 )
