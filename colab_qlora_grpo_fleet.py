@@ -27,7 +27,7 @@ print("Dependencies installed!")
 import os
 
 REPO_URL = "https://github.com/SnippyCodes/Libratio.git"  # <-- UPDATE THIS to your actual GitHub repo URL
-REPO_DIR = "/content/Libratio"
+REPO_DIR = "./Libratio"
 
 if not os.path.exists(REPO_DIR):
     print(f"Cloning repo from {REPO_URL}...")
@@ -174,7 +174,7 @@ print(f"Dataset: {len(ds)} samples")
 # ── Step 7: Train with GRPO ────────────────────────────────
 from trl import GRPOTrainer, GRPOConfig
 
-OUT_DIR = "/content/results/qlora_grpo_fleet"
+OUT_DIR = "./results/qlora_grpo_fleet"
 
 cfg = GRPOConfig(
     output_dir=OUT_DIR,
@@ -262,7 +262,7 @@ print(f"LoRA adapter: {OUT_DIR}")
 print(f"Merged model: {MERGED_DIR}")
 print("\nTo download, run in a new cell:")
 print("  from google.colab import files")
-print("  !zip -r fleet_model.zip /content/results")
+print("  !zip -r fleet_model.zip ./results")
 print("  files.download('fleet_model.zip')")
 print("  files.download('reward_curve.png')")
 print("  files.download('loss_curve.png')")
