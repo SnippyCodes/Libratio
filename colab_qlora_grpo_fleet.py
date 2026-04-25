@@ -187,7 +187,8 @@ cfg = GRPOConfig(
     logging_steps=10,
     save_steps=50,
     warmup_ratio=0.1,
-    bf16=True,
+    fp16=True,      # T4 GPU requires fp16 (bfloat16 is Ampere+ only)
+    bf16=False,
     report_to="none",
 )
 
