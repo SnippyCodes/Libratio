@@ -25,15 +25,39 @@ A **multi-agent** reinforcement learning environment simulating the highest-stak
 
 ## Hackathon Submission Links
 - **Hugging Face Space**: [https://huggingface.co/spaces/SnippyCodes/Libratio](https://huggingface.co/spaces/SnippyCodes/Libratio)
-- **2-Minute Demo Video**: [Insert YouTube URL Here]
-- **Training Script (Colab)**: [Run in Google Colab](https://colab.research.google.com/drive/1O74FkE8YCkren_sJHmx_p0i3hLAQ9Ylv)
+- **Environment Manifest**: [`openenv.yaml`](./openenv.yaml)
+- **Training Script (Colab, Unsloth + TRL/GRPO)**: [Run in Google Colab](https://colab.research.google.com/drive/1O74FkE8YCkren_sJHmx_p0i3hLAQ9Ylv)
+- **Standalone Colab Script (single-cell)**: [`colab_qlora_grpo_fleet.py`](./colab_qlora_grpo_fleet.py)
+- **Training Results JSON (real run artifact)**: [`training_results.json`](./training_results.json)
+- **Writeup / Video / Slides**: _Add your public URL here before final submission_
 
 ---
 
 ## Training Evidence
 
-![RL Training Reward Curve](./training_plot.png)
-*Figure 1: GRPO training log from Colab showing the Llama-3.1-8B model's reward steadily increasing as it learns to statelessly detect precision-induced NaN crashes and format valid JSON actions.*
+![Run 2 Reward Curve](./colab_graphs/reward_curve_run2.png)
+*Figure 1: GRPO reward curve from a real training run (`run2`), with reward tracked against training step.*
+
+![Run 2 Loss Curve](./colab_graphs/loss_curve_run2.png)
+*Figure 2: GRPO loss curve from the same run, showing optimization behavior over steps.*
+
+![Baseline vs Trained Comparison](./colab_graphs/baseline_comparison.png)
+*Figure 3: Baseline comparison plot used to contrast trained policy behavior against baseline performance.*
+
+- **Colab graphs folder**: [`colab_graphs/`](./colab_graphs)
+- **HF graphs folder**: [`hf_graphs/`](./hf_graphs)
+
+---
+
+## Submission Checklist (Minimum Requirements)
+
+- [x] Built on **OpenEnv** with valid manifest: [`openenv.yaml`](./openenv.yaml)
+- [x] Working training pipeline using **Unsloth + Hugging Face TRL (GRPO)**: [`colab_qlora_grpo_fleet.py`](./colab_qlora_grpo_fleet.py) and [Colab notebook](https://colab.research.google.com/drive/1O74FkE8YCkren_sJHmx_p0i3hLAQ9Ylv)
+- [x] Evidence of training committed: `reward`/`loss` plots + [`training_results.json`](./training_results.json)
+- [x] Environment published on Hugging Face Space: [SnippyCodes/Libratio](https://huggingface.co/spaces/SnippyCodes/Libratio)
+- [x] README explains problem, environment design, and results
+- [ ] Add final writeup asset link (HF blog post, <2 min YouTube video, or slides)
+- [ ] Ensure final writeup/video/slides URL is linked in this README before submission
 
 ---
 

@@ -26,6 +26,7 @@ print("Dependencies installed!")
 # ── Step 2: Clone your repo ────────────────────────────────
 import os
 import subprocess
+from datetime import datetime
 
 REPO_URL = "https://github.com/SnippyCodes/Libratio.git"  # <-- UPDATE THIS to your actual GitHub repo URL
 REPO_DIR = "./Libratio"
@@ -245,43 +246,19 @@ print("=" * 60 + "\n")
 
 trainer.train()
 
-# ── Step 7.5: Plot Training Curves ─────────────────────────
-import matplotlib.pyplot as plt
+# ── Step 7.5: Persist logs + auto-generate plots ───────────
+from training_logging import save_trl_training_artifacts
 
-history = trainer.state.log_history
-steps = []
-rewards = []
-losses = []
-
-for log in history:
-    if "step" in log:
-        if "reward" in log:
-            steps.append(log["step"])
-            rewards.append(log["reward"])
-        if "loss" in log:
-            losses.append(log["loss"])
-
-if steps and rewards:
-    plt.figure(figsize=(10, 5))
-    plt.plot(steps, rewards, marker='o', color='g', label='Mean Reward')
-    plt.title('GRPO Training: Mean Fleet Reward')
-    plt.xlabel('Steps')
-    plt.ylabel('Reward')
-    plt.grid(True)
-    plt.savefig('reward_curve.png')
-    plt.show()
-
-if losses:
-    # Match the steps length to the losses length for plotting
-    loss_steps = [log["step"] for log in history if "loss" in log]
-    plt.figure(figsize=(10, 5))
-    plt.plot(loss_steps, losses, marker='o', color='r', label='Training Loss')
-    plt.title('GRPO Training: Loss')
-    plt.xlabel('Steps')
-    plt.ylabel('Loss')
-    plt.grid(True)
-    plt.savefig('loss_curve.png')
-    plt.show()
+run_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+artifact_paths = save_trl_training_artifacts(
+    log_history=trainer.state.log_history,
+    output_dir="./results/training_logs",
+    run_name=f"grpo_fleet_{run_id}",
+)
+print("\nSaved training artifacts:")
+for key, value in artifact_paths.items():
+    if value:
+        print(f"  - {key}: {value}")
 
 # ── Step 8: Save results ───────────────────────────────────
 trainer.save_model(OUT_DIR)
@@ -302,5 +279,5 @@ print("\nTo download, run in a new cell:")
 print("  from google.colab import files")
 print("  !zip -r fleet_model.zip ./results")
 print("  files.download('fleet_model.zip')")
-print("  files.download('reward_curve.png')")
-print("  files.download('loss_curve.png')")
+print("  files.download('<path-from-artifact_paths.reward_curve_png>')")
+print("  files.download('<path-from-artifact_paths.loss_curve_png>')")
