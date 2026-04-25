@@ -269,7 +269,7 @@ def run_grpo_training(
         gradient_accumulation_steps=4,
         learning_rate=learning_rate,
         num_train_epochs=num_epochs,
-        max_steps=650,               # Cap at 650 steps (saves GPU cost)
+        max_steps=500,               # Cap at 500 steps
         max_completion_length=512,
         logging_steps=10,
         save_steps=50,

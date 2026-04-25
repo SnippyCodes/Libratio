@@ -220,13 +220,13 @@ cfg = GRPOConfig(
     gradient_accumulation_steps=4,
     learning_rate=2e-5,
     num_train_epochs=2,
-    max_steps=650,                 # Cap at 650 steps (saves GPU cost)
-    max_completion_length=512,
+    max_steps=500,                 # Cap at 500 steps
+    max_completion_length=256,     # JSON actions are ~100-150 tokens; saves ~30% gen time
     logging_steps=10,
-    save_steps=50,
+    save_steps=100,                # Less frequent saves = less I/O overhead
     warmup_ratio=0.1,
-    fp16=True,      # T4 GPU requires fp16 (bfloat16 is Ampere+ only)
-    bf16=False,
+    fp16=False,
+    bf16=True,      # A10G is Ampere — BF16 is faster + better precision than FP16
     report_to="none",
 )
 
