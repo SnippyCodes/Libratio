@@ -17,20 +17,39 @@ import json
 import argparse
 from typing import Dict, List, Any
 
-# Try direct import, fallback to server
-USE_SERVER = os.getenv("TRAIN_MODE", "").lower() == "server"
 
-if USE_SERVER:
+def _init_direct_mode():
+    """Initialize direct import mode (no server needed)."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from environment.fleet_env import FleetEnvironment
+    _env = FleetEnvironment()
+
+    def reset_fn(task_id: str) -> Dict:
+        return _env.reset(task_id)
+
+    def step_fn(action: Dict) -> Dict[str, Any]:
+        result = _env.step(action)
+        return {
+            "observation": result["observation"],
+            "reward": result["reward"]["score"],
+            "feedback": result["reward"]["feedback"],
+            "done": result["done"],
+        }
+    return reset_fn, step_fn
+
+
+def _init_server_mode():
+    """Initialize server mode (HTTP calls to running server)."""
     import httpx
-    ENV_URL = os.getenv("ENV_URL", "http://localhost:7860")
-    FLEET_URL = f"{ENV_URL}/fleet"
+    env_url = os.getenv("ENV_URL", "http://localhost:7860")
+    fleet_url = f"{env_url}/fleet"
 
-    def reset_environment(task_id: str) -> Dict:
-        res = httpx.post(f"{FLEET_URL}/reset", json={"task_id": task_id}, timeout=30.0)
+    def reset_fn(task_id: str) -> Dict:
+        res = httpx.post(f"{fleet_url}/reset", json={"task_id": task_id}, timeout=30.0)
         return res.json()["observation"]
 
-    def step_environment(action: Dict) -> Dict[str, Any]:
-        res = httpx.post(f"{FLEET_URL}/step", json={"action": action}, timeout=30.0)
+    def step_fn(action: Dict) -> Dict[str, Any]:
+        res = httpx.post(f"{fleet_url}/step", json={"action": action}, timeout=30.0)
         data = res.json()
         return {
             "observation": data.get("observation"),
@@ -38,24 +57,11 @@ if USE_SERVER:
             "feedback": data["reward"]["feedback"],
             "done": data["done"],
         }
-else:
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from environment.fleet_env import FleetEnvironment
+    return reset_fn, step_fn
 
-    _fleet_env = FleetEnvironment()
 
-    def reset_environment(task_id: str) -> Dict:
-        result = _fleet_env.reset(task_id)
-        return result
-
-    def step_environment(action: Dict) -> Dict[str, Any]:
-        result = _fleet_env.step(action)
-        return {
-            "observation": result.get("observation"),
-            "reward": result["reward"]["score"],
-            "feedback": result["reward"]["feedback"],
-            "done": result["done"],
-        }
+# Default to direct mode (overridden by main() based on CLI args)
+reset_environment, step_environment = _init_direct_mode()
 
 
 def collect_episode(task_id: str, policy_fn, max_steps: int = 10) -> Dict:
@@ -80,11 +86,16 @@ def collect_episode(task_id: str, policy_fn, max_steps: int = 10) -> Dict:
         done = step_result["done"]
         steps += 1
 
+    avg_step_reward = sum(rewards) / len(rewards) if rewards else 0.0
+    final_step_reward = rewards[-1] if rewards else 0.0
+    
     return {
         "observations": observations,
         "actions": actions,
         "rewards": rewards,
         "total_reward": sum(rewards),
+        "avg_step_reward": avg_step_reward,
+        "final_step_reward": final_step_reward,
         "num_steps": steps,
     }
 
@@ -211,12 +222,20 @@ def greedy_policy(observation: Dict) -> Dict:
         if num_models == 0:
             return {"allocations": {}, "reasoning": "no models"}
 
-        base_gpus = total_gpus // num_models
+        # Priority-weighted allocation with budget cap
+        total_priority = sum(m.get("priority", 1) for m in models)
         allocations = {}
-        for m in models:
+        gpus_remaining = total_gpus
+        for i, m in enumerate(models):
             mid = m["model_id"]
             priority = m.get("priority", 1)
-            gpus = max(1, base_gpus + priority - 1)
+            # Proportional to priority, minimum 1
+            if i < num_models - 1:
+                gpus = max(1, round(total_gpus * priority / max(total_priority, 1)))
+                gpus = min(gpus, gpus_remaining - (num_models - i - 1))  # leave 1 for each remaining
+            else:
+                gpus = max(1, gpus_remaining)  # last model gets the rest
+            gpus_remaining -= gpus
             allocations[mid] = {
                 "gpus": gpus,
                 "precision_strategy": {
@@ -279,8 +298,11 @@ def run_training(
     results = {
         "episodes": [],
         "rewards": [],
+        "avg_step_rewards": [],
+        "final_step_rewards": [],
         "num_steps": [],
         "best_reward": 0.0,
+        "successes": 0,
     }
 
     print(f"\n{'='*60}")
@@ -292,17 +314,25 @@ def run_training(
 
         results["episodes"].append(episode)
         results["rewards"].append(episode_result["total_reward"])
+        results["avg_step_rewards"].append(episode_result["avg_step_reward"])
+        results["final_step_rewards"].append(episode_result["final_step_reward"])
         results["num_steps"].append(episode_result["num_steps"])
 
         if episode_result["total_reward"] > results["best_reward"]:
             results["best_reward"] = episode_result["total_reward"]
+            
+        # Consider an episode a "success" if the final step reward is decently high (>0.8)
+        if episode_result["final_step_reward"] > 0.8:
+            results["successes"] += 1
 
         if episode % 10 == 0:
-            avg_reward = sum(results["rewards"][-10:]) / min(10, len(results["rewards"]))
-            print(f"[EPISODE] {episode:>3} reward={episode_result['total_reward']:.3f} steps={episode_result['num_steps']} avg_last10={avg_reward:.3f}")
+            avg_final = sum(results["final_step_rewards"][-10:]) / min(10, len(results["final_step_rewards"]))
+            print(f"[EPISODE] {episode:>3} total_reward={episode_result['total_reward']:.3f} final_step={episode_result['final_step_reward']:.3f} steps={episode_result['num_steps']} avg_final_last10={avg_final:.3f}")
 
-    avg_reward = sum(results["rewards"]) / len(results["rewards"])
-    print(f"\n[RESULT] task={task_id} avg_reward={avg_reward:.3f} best={results['best_reward']:.3f}")
+    avg_total_reward = sum(results["rewards"]) / len(results["rewards"])
+    avg_final_reward = sum(results["final_step_rewards"]) / len(results["final_step_rewards"])
+    success_rate = results["successes"] / num_episodes
+    print(f"\n[RESULT] task={task_id} success_rate={success_rate*100:.1f}% avg_final_reward={avg_final_reward:.3f} avg_total_reward={avg_total_reward:.3f} best_total={results['best_reward']:.3f}")
 
     return results
 
@@ -317,7 +347,8 @@ def main():
     args = parser.parse_args()
 
     if args.mode == "server":
-        os.environ["TRAIN_MODE"] = "server"
+        global reset_environment, step_environment
+        reset_environment, step_environment = _init_server_mode()
 
     results = run_training(args.task, args.episodes, args.policy)
 

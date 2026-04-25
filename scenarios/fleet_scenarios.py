@@ -39,6 +39,24 @@ CODE_DISTRIBUTION = {
     "output": 0.198,
 }
 
+# ── New architecture distributions (Phase 1: scenario diversity) ─────────────
+
+VISION_DISTRIBUTION = {
+    "embedding": 0.200,   # Patch embedding is large in ViT-style models
+    "attention": 0.350,   # ViT-style heavy self-attention
+    "ffn": 0.300,
+    "layernorm": 0.002,
+    "output": 0.148,
+}
+
+MULTIMODAL_DISTRIBUTION = {
+    "embedding": 0.250,   # Text + vision dual embeddings
+    "attention": 0.200,   # Cross-attention is smaller per-param
+    "ffn": 0.350,
+    "layernorm": 0.002,
+    "output": 0.198,
+}
+
 
 # ── Loss trajectory generators (for oversight monitoring task) ───────────────
 
@@ -63,6 +81,41 @@ def _slow_diverge_trajectory(steps, diverge_start, base_loss=4.5, seed=42):
     traj = _smooth_trajectory(steps, base_loss=base_loss, seed=seed)
     for i in range(diverge_start, steps):
         traj[i] = traj[diverge_start - 1] + 0.08 * (i - diverge_start) + rng.gauss(0, 0.03)
+    return traj
+
+
+def _intermittent_nan_trajectory(steps, nan_steps, base_loss=4.5, seed=42):
+    """Generate a trajectory with intermittent NaN spikes that recover.
+
+    Tests false-positive resistance: agent should NOT flag this as a crash
+    because the model recovers each time. Real-world GPUs sometimes produce
+    transient NaN from memory bit-flips or numerical edge cases.
+    """
+    traj = _smooth_trajectory(steps, base_loss=base_loss, seed=seed)
+    for ns in nan_steps:
+        if ns < steps:
+            traj[ns] = float('nan')
+            # Recovery: next values return to normal trajectory
+            if ns + 1 < steps:
+                traj[ns + 1] = traj[max(0, ns - 1)] * 1.05  # small spike on recovery
+    return traj
+
+
+def _cascading_failure_trajectory(steps, initial_crash, cascade_delay=8,
+                                   base_loss=4.5, seed=42):
+    """Generate trajectory where one crash triggers another model's OOM.
+
+    When Model A crashes, its freed memory gets reallocated, causing
+    memory pressure on Model B which then also crashes after a delay.
+    """
+    traj = _smooth_trajectory(steps, base_loss=base_loss, seed=seed)
+    # Memory pressure spike before cascade crash
+    cascade_step = initial_crash + cascade_delay
+    if cascade_step < steps:
+        traj[cascade_step - 1] = traj[cascade_step - 2] * 3.0  # pressure spike
+        traj[cascade_step] = 1e8
+        for i in range(cascade_step + 1, steps):
+            traj[i] = float('nan')
     return traj
 
 
@@ -173,6 +226,164 @@ FLEET_SCENARIOS = {
                 "layer_distribution": DENSE_DISTRIBUTION,
                 "priority": 1,
                 "priority_reason": "Edge deployment research — flexible deadline",
+            },
+        ],
+        "max_steps_per_task": 5,
+    },
+
+    # ── Phase 1: New fleet configs for scenario diversity ──
+
+    # Micro Fleet: extreme memory pressure, 2 tiny GPUs
+    "micro_fleet": {
+        "scenario_id": "micro_fleet",
+        "description": "2 models on 2 GPUs — extreme memory pressure forces aggressive precision",
+        "cluster": {
+            "total_gpus": 2,
+            "gpu_memory_gb": 40,           # A100 40GB variant
+            "total_memory_gb": 80,
+            "cost_per_gpu_hour_usd": 1.50,
+        },
+        "models": [
+            {
+                "model_id": "model_a",
+                "name": "Phi-3-Mini-3.8B",
+                "total_params": 3_800_000_000,
+                "layer_distribution": DENSE_DISTRIBUTION,
+                "priority": 2,
+                "priority_reason": "Edge model fine-tune — needs to ship to mobile",
+            },
+            {
+                "model_id": "model_b",
+                "name": "ViT-Large-300M",
+                "total_params": 300_000_000,
+                "layer_distribution": VISION_DISTRIBUTION,
+                "priority": 1,
+                "priority_reason": "Vision backbone experiment — low priority",
+            },
+        ],
+        "max_steps_per_task": 5,
+    },
+
+    # Mega Fleet: 4 models including 70B, scale test
+    "mega_fleet": {
+        "scenario_id": "mega_fleet",
+        "description": "4 models (including 70B) on 32 GPUs — Meta-scale fleet management",
+        "cluster": {
+            "total_gpus": 32,
+            "gpu_memory_gb": 80,
+            "total_memory_gb": 2560,
+            "cost_per_gpu_hour_usd": 3.00,
+        },
+        "models": [
+            {
+                "model_id": "model_a",
+                "name": "LLaMA-3-70B",
+                "total_params": 70_000_000_000,
+                "layer_distribution": DENSE_DISTRIBUTION,
+                "priority": 4,
+                "priority_reason": "Flagship 70B — highest priority, CEO demo next week",
+            },
+            {
+                "model_id": "model_b",
+                "name": "LLaMA-3-13B",
+                "total_params": 13_000_000_000,
+                "layer_distribution": DENSE_DISTRIBUTION,
+                "priority": 2,
+                "priority_reason": "Distillation target — medium priority",
+            },
+            {
+                "model_id": "model_c",
+                "name": "LLaVA-7B",
+                "total_params": 7_000_000_000,
+                "layer_distribution": MULTIMODAL_DISTRIBUTION,
+                "priority": 2,
+                "priority_reason": "Multimodal research — medium priority",
+            },
+            {
+                "model_id": "model_d",
+                "name": "CodeLLaMA-7B",
+                "total_params": 7_000_000_000,
+                "layer_distribution": CODE_DISTRIBUTION,
+                "priority": 1,
+                "priority_reason": "Internal tooling experiment — lowest priority",
+            },
+        ],
+        "max_steps_per_task": 5,
+    },
+
+    # Heterogeneous Fleet: mixed GPU types
+    "heterogeneous_fleet": {
+        "scenario_id": "heterogeneous_fleet",
+        "description": "3 models on mixed A100+H100 cluster — different GPU capabilities",
+        "cluster": {
+            "total_gpus": 6,
+            "gpu_memory_gb": 60,           # Average: mix of 40GB A100 + 80GB H100
+            "total_memory_gb": 360,
+            "cost_per_gpu_hour_usd": 2.50, # Blended rate
+        },
+        "models": [
+            {
+                "model_id": "model_a",
+                "name": "LLaMA-3-7B",
+                "total_params": 7_000_000_000,
+                "layer_distribution": DENSE_DISTRIBUTION,
+                "priority": 3,
+                "priority_reason": "Production model — needs H100 for FP8 support",
+            },
+            {
+                "model_id": "model_b",
+                "name": "CLIP-ViT-L",
+                "total_params": 430_000_000,
+                "layer_distribution": VISION_DISTRIBUTION,
+                "priority": 1,
+                "priority_reason": "Vision encoder — can run on A100",
+            },
+            {
+                "model_id": "model_c",
+                "name": "Mistral-7B",
+                "total_params": 7_000_000_000,
+                "layer_distribution": DENSE_DISTRIBUTION,
+                "priority": 2,
+                "priority_reason": "Community fine-tune — medium priority",
+            },
+        ],
+        "max_steps_per_task": 5,
+    },
+
+    # Oversubscribed Fleet: impossible to fit all at FP32
+    "oversubscribed_fleet": {
+        "scenario_id": "oversubscribed_fleet",
+        "description": "3 large models on 4 GPUs — must use aggressive precision or some models don't fit",
+        "cluster": {
+            "total_gpus": 4,
+            "gpu_memory_gb": 80,
+            "total_memory_gb": 320,
+            "cost_per_gpu_hour_usd": 3.00,
+        },
+        "models": [
+            {
+                "model_id": "model_a",
+                "name": "LLaMA-3-13B",
+                "total_params": 13_000_000_000,
+                "layer_distribution": DENSE_DISTRIBUTION,
+                "priority": 3,
+                "priority_reason": "Revenue-critical model — must complete",
+            },
+            {
+                "model_id": "model_b",
+                "name": "Mixtral-8x7B",
+                "total_params": 46_000_000_000,
+                "layer_distribution": MOE_DISTRIBUTION,
+                "priority": 2,
+                "priority_reason": "MoE pre-training — needs maximum FP8",
+            },
+            {
+                "model_id": "model_c",
+                "name": "LLaMA-3-7B",
+                "total_params": 7_000_000_000,
+                "layer_distribution": DENSE_DISTRIBUTION,
+                "priority": 1,
+                "priority_reason": "Experimental run — can be killed if needed",
             },
         ],
         "max_steps_per_task": 5,
@@ -304,6 +515,128 @@ FLEET_OVERSIGHT_SCENARIOS = {
             "crashing_model": "model_b",
             "failure_step": 72,
             "cause_keywords": ["layernorm", "fp8", "model_b", "moe"],
+        },
+        "step_count": 100,
+        "window_size": 20,
+    },
+
+    # ── Phase 1: New oversight scenarios for diversity ──
+
+    "cascading_failure": {
+        "scenario_id": "cascading_failure",
+        "description": "Model A crashes from FP8 embedding, Model C cascades into OOM 8 steps later",
+        "fleet_id": "medium_fleet",
+        "trajectories": {
+            "model_a": {
+                "loss": _crash_trajectory(100, crash_step=25, base_loss=4.3, seed=60),
+                "precision_config": {"embedding": "FP8", "attention": "BF16", "ffn": "FP8", "layernorm": "BF16", "output": "FP32"},
+                "status": "crashed",
+            },
+            "model_b": {
+                "loss": _smooth_trajectory(100, base_loss=4.1, seed=61),
+                "precision_config": {"embedding": "FP32", "attention": "BF16", "ffn": "FP8", "layernorm": "BF16", "output": "FP32"},
+                "status": "healthy",
+            },
+            "model_c": {
+                "loss": _cascading_failure_trajectory(100, initial_crash=25, cascade_delay=8, base_loss=3.9, seed=62),
+                "precision_config": {"embedding": "FP32", "attention": "BF16", "ffn": "BF16", "layernorm": "BF16", "output": "FP32"},
+                "status": "cascade_crashed",
+            },
+        },
+        "ground_truth": {
+            "crashing_model": "model_a",       # Root cause is Model A
+            "failure_step": 25,
+            "cause_keywords": ["embedding", "fp8", "underflow", "model_a", "cascade"],
+        },
+        "step_count": 100,
+        "window_size": 20,
+    },
+
+    "intermittent_nan_trap": {
+        "scenario_id": "intermittent_nan_trap",
+        "description": "Model B has transient NaN spikes but recovers — agent should NOT flag as crash",
+        "fleet_id": "medium_fleet",
+        "trajectories": {
+            "model_a": {
+                "loss": _smooth_trajectory(100, base_loss=4.0, seed=70),
+                "precision_config": {"embedding": "FP32", "attention": "BF16", "ffn": "FP8", "layernorm": "BF16", "output": "FP32"},
+                "status": "healthy",
+            },
+            "model_b": {
+                "loss": _intermittent_nan_trajectory(100, nan_steps=[22, 45, 78], base_loss=4.5, seed=71),
+                "precision_config": {"embedding": "FP32", "attention": "BF16", "ffn": "FP8", "layernorm": "BF16", "output": "FP32"},
+                "status": "healthy",  # Recovers each time!
+            },
+            "model_c": {
+                "loss": _smooth_trajectory(100, base_loss=3.7, seed=72),
+                "precision_config": {"embedding": "FP32", "attention": "BF16", "ffn": "BF16", "layernorm": "BF16", "output": "FP32"},
+                "status": "healthy",
+            },
+        },
+        "ground_truth": {
+            "crashing_model": None,  # No real crash! Flagging = false alarm
+            "failure_step": -1,
+            "cause_keywords": [],
+        },
+        "step_count": 100,
+        "window_size": 20,
+    },
+
+    "slow_drift_no_crash": {
+        "scenario_id": "slow_drift_no_crash",
+        "description": "All models slowly diverge but none crash — tests patience vs trigger-happiness",
+        "fleet_id": "large_fleet",
+        "trajectories": {
+            "model_a": {
+                "loss": _slow_diverge_trajectory(100, diverge_start=60, base_loss=4.2, seed=80),
+                "precision_config": {"embedding": "FP32", "attention": "BF16", "ffn": "FP8", "layernorm": "BF16", "output": "FP32"},
+                "status": "diverging",
+            },
+            "model_b": {
+                "loss": _slow_diverge_trajectory(100, diverge_start=70, base_loss=5.0, seed=81),
+                "precision_config": {"embedding": "FP32", "attention": "BF16", "ffn": "BF16", "layernorm": "BF16", "output": "FP32"},
+                "status": "diverging",
+            },
+            "model_c": {
+                "loss": _slow_diverge_trajectory(100, diverge_start=55, base_loss=3.5, seed=82),
+                "precision_config": {"embedding": "FP32", "attention": "FP16", "ffn": "BF16", "layernorm": "BF16", "output": "FP32"},
+                "status": "diverging",
+            },
+        },
+        "ground_truth": {
+            "crashing_model": None,  # Divergence != crash
+            "failure_step": -1,
+            "cause_keywords": [],
+        },
+        "step_count": 100,
+        "window_size": 20,
+    },
+
+    "output_fp16_crash": {
+        "scenario_id": "output_fp16_crash",
+        "description": "Model C crashes from FP16 on output layer — different root cause than usual FP8 embedding",
+        "fleet_id": "medium_fleet",
+        "trajectories": {
+            "model_a": {
+                "loss": _smooth_trajectory(100, base_loss=4.1, seed=90),
+                "precision_config": {"embedding": "FP32", "attention": "BF16", "ffn": "FP8", "layernorm": "BF16", "output": "FP32"},
+                "status": "healthy",
+            },
+            "model_b": {
+                "loss": _smooth_trajectory(100, base_loss=4.6, seed=91),
+                "precision_config": {"embedding": "FP32", "attention": "BF16", "ffn": "BF16", "layernorm": "BF16", "output": "FP32"},
+                "status": "healthy",
+            },
+            "model_c": {
+                "loss": _crash_trajectory(100, crash_step=48, base_loss=3.8, seed=92),
+                "precision_config": {"embedding": "FP32", "attention": "BF16", "ffn": "FP8", "layernorm": "BF16", "output": "FP16"},
+                "status": "crashed",
+            },
+        },
+        "ground_truth": {
+            "crashing_model": "model_c",
+            "failure_step": 48,
+            "cause_keywords": ["output", "fp16", "overflow", "model_c", "cross-entropy"],
         },
         "step_count": 100,
         "window_size": 20,

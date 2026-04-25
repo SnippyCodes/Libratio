@@ -30,16 +30,17 @@ from environment.physics_model import (
     H100_COST_PER_HOUR_USD,
     compute_training_cost,
     score_precision_layer,
+    compute_hardware_safety,
 )
 
 
 def clamp_score(score: float) -> float:
-    """Clamp score to the open interval (0, 1) for OpenEnv compliance."""
+    """Clamp score to the open interval (0.01, 0.99) for OpenEnv compliance."""
     try:
         val = float(score)
     except (ValueError, TypeError):
         val = 0.01
-    return float(max(0.001, min(0.999, val)))
+    return float(max(0.01, min(0.99, val)))
 
 
 class FleetEnvironment:
@@ -84,7 +85,7 @@ class FleetEnvironment:
         self.history: list = []
         self.task_state: Dict[str, Any] = {}
 
-    def reset(self, task_id: str) -> Dict[str, Any]:
+    def reset(self, task_id: str, scenario_id: Optional[str] = None) -> Dict[str, Any]:
         """Reset environment for a new fleet episode."""
         from scenarios.fleet_scenarios import FLEET_SCENARIOS, FLEET_OVERSIGHT_SCENARIOS
 
@@ -95,13 +96,13 @@ class FleetEnvironment:
         self.task_state = {}
 
         if task_id == "fleet_precision":
-            return self._reset_fleet_precision(FLEET_SCENARIOS)
+            return self._reset_fleet_precision(FLEET_SCENARIOS, scenario_id)
         elif task_id == "fleet_oversight":
-            return self._reset_fleet_oversight(FLEET_OVERSIGHT_SCENARIOS)
+            return self._reset_fleet_oversight(FLEET_OVERSIGHT_SCENARIOS, scenario_id)
         elif task_id == "fleet_resource":
-            return self._reset_fleet_resource(FLEET_SCENARIOS)
+            return self._reset_fleet_resource(FLEET_SCENARIOS, scenario_id)
         elif task_id == "fleet_recovery":
-            return self._reset_fleet_recovery(FLEET_SCENARIOS, FLEET_OVERSIGHT_SCENARIOS)
+            return self._reset_fleet_recovery(FLEET_SCENARIOS, FLEET_OVERSIGHT_SCENARIOS, scenario_id)
         else:
             raise ValueError(f"Unknown fleet task: {task_id}")
 
@@ -143,15 +144,67 @@ class FleetEnvironment:
         }
 
     # ═══════════════════════════════════════════════════════════════════════════
+    # Phase 5: Inverse Reward Design (Anti-Reward Hacking)
+    #   "The reward function is a PROXY for what we actually want. Penalize
+    #    behaviors that optimize the proxy but violate the intent."
+    #   — Seminar Note: Inverse Reward Design tells agent the rules are
+    #     guidelines, preventing exploits like shutting down a rack to save power.
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def _detect_reward_hacking(self, action: dict, task_id: str) -> tuple:
+        """Detect if agent is exploiting reward function loopholes.
+
+        Returns: (is_hacking: bool, penalty: float, reason: str)
+        """
+        if task_id == "fleet_precision":
+            strategy = action.get("precision_strategy", {})
+            values = list(strategy.values())
+            # Hack: all FP8 everywhere (crashes training but minimizes memory)
+            if values and all(v == "FP8" for v in values):
+                return True, -0.5, "IRD: All-FP8 is degenerate — training would crash on embedding+output"
+            # Hack: all FP32 everywhere (no optimization, wastes fleet resources)
+            if values and all(v == "FP32" for v in values):
+                return True, -0.2, "IRD: All-FP32 wastes fleet resources — zero optimization"
+            # Hack: no strategy provided
+            if not strategy:
+                return True, -0.4, "IRD: Empty precision strategy is invalid"
+
+        elif task_id == "fleet_resource":
+            allocations = action.get("allocations", {})
+            if not allocations:
+                return True, -0.4, "IRD: Empty allocations are invalid"
+            # Hack: starve any model completely
+            for mid, alloc in allocations.items():
+                if isinstance(alloc, dict) and alloc.get("gpus", 0) == 0:
+                    return True, -0.3, f"IRD: Starving {mid} with 0 GPUs is not acceptable fleet management"
+
+        elif task_id == "fleet_oversight":
+            action_type = action.get("action_type", "")
+            # Hack: flag on very first step with no analysis (trigger-happy)
+            if action_type == "flag_instability" and self.step_number == 0:
+                analysis = action.get("analysis", "") or ""
+                root_cause = action.get("root_cause", "") or ""
+                if len(analysis) < 15 and len(root_cause) < 10:
+                    return True, -0.2, "IRD: Flagging without evidence on first window suggests gaming"
+
+        elif task_id == "fleet_recovery":
+            reasoning = action.get("reasoning", "") or ""
+            # Hack: submit near-empty responses to collect base score
+            if len(reasoning) < 5 and not action.get("root_cause") and not action.get("new_precision_strategy"):
+                return True, -0.3, "IRD: Near-empty recovery action exploits base score"
+
+        return False, 0.0, ""
+
+    # ═══════════════════════════════════════════════════════════════════════════
     # TASK 1: Fleet Precision Assignment
     #   Multiple agents assign precision to their models under shared memory.
     #   Each step, ONE agent configures ONE model's full precision strategy.
     #   Shared memory pool creates inter-agent dependency.
     # ═══════════════════════════════════════════════════════════════════════════
 
-    def _reset_fleet_precision(self, scenarios: Dict) -> Dict[str, Any]:
+    def _reset_fleet_precision(self, scenarios: Dict, scenario_id: Optional[str] = None) -> Dict[str, Any]:
         """Initialize fleet precision assignment episode."""
-        scenario_key = random.choice(list(scenarios.keys()))
+        scenario_key = scenario_id if scenario_id in scenarios else random.choice(list(scenarios.keys()))
         self.scenario = copy.deepcopy(scenarios[scenario_key])
         cluster = self.scenario["cluster"]
         models = self.scenario["models"]
@@ -212,7 +265,14 @@ class FleetEnvironment:
         }
 
     def _step_fleet_precision(self, action: Dict[str, Any]) -> Dict[str, Any]:
-        """Process one agent's precision strategy for their model."""
+        """Process one agent's precision strategy for their model.
+
+        Integrates:
+        - Phase 2: Breadcrumb rewards (per-layer feedback signals)
+        - Phase 3: Hardware safety dashboard (thermal/power/memory checks)
+        - Phase 4: Difference Rewards (counterfactual fleet contribution)
+        - Phase 5: Inverse Reward Design (degenerate action detection)
+        """
         s = self.task_state
         agent_idx = s["current_agent_idx"]
         model = s["models"][agent_idx]
@@ -222,6 +282,24 @@ class FleetEnvironment:
 
         self.step_number += 1
 
+        # ── Phase 5: IRD check — catch reward hacking before scoring ──
+        is_hacking, ird_penalty, ird_reason = self._detect_reward_hacking(action, "fleet_precision")
+        if is_hacking:
+            self.history.append({
+                "step": self.step_number, "agent": model_id,
+                "strategy": strategy, "score": 0.01, "ird_blocked": True,
+            })
+            s["current_agent_idx"] += 1
+            done = s["current_agent_idx"] >= len(s["models"])
+            if done:
+                self.is_done = True
+            return {
+                "observation": None if done else self._fleet_precision_observation(),
+                "reward": {"score": 0.01, "feedback": ird_reason},
+                "done": done,
+                "info": {"ird_violation": True},
+            }
+
         # Compute metrics using physics model
         metrics = compute_training_cost(
             total_params=model["total_params"],
@@ -229,17 +307,34 @@ class FleetEnvironment:
             layer_distribution=model["layer_distribution"],
         )
 
+        # ── Phase 3: Hardware safety dashboard ──
+        hw_safety = compute_hardware_safety(
+            total_params=model["total_params"],
+            precision_strategy=strategy,
+            layer_distribution=model["layer_distribution"],
+            num_gpus=max(1, cluster["total_gpus"] // len(s["models"])),
+            gpu_memory_gb=cluster.get("gpu_memory_gb", 80.0),
+        )
+
         s["agent_configs"][model_id] = strategy
         s["agent_results"][model_id] = metrics
         s["fleet_memory_used_gb"] += metrics["memory_gb"]
 
-        # ── Per-agent scoring ──
-        # Score each layer choice individually, average them
+        # ── Phase 2: Breadcrumb rewards — per-layer feedback signals ──
         layer_scores = []
+        breadcrumbs = []
         for layer_type in model["layer_distribution"]:
             precision = strategy.get(layer_type, "FP32")
-            lscore, _ = score_precision_layer(layer_type, precision)
+            lscore, lfeedback = score_precision_layer(layer_type, precision)
             layer_scores.append(lscore)
+            # Breadcrumb: tell agent exactly which layers are good/bad
+            if lscore >= 0.95:
+                crumb = f"[OK] {layer_type}={precision}"
+            elif lscore >= 0.55:
+                crumb = f"[~~] {layer_type}={precision}"
+            else:
+                crumb = f"[!!] {layer_type}={precision}"
+            breadcrumbs.append(crumb)
 
         avg_layer_score = sum(layer_scores) / max(len(layer_scores), 1)
 
@@ -261,12 +356,39 @@ class FleetEnvironment:
             stability_penalty = 0.3
             memory_feedback += " | CRITICAL: Unstable configuration detected!"
 
-        agent_score = clamp_score(avg_layer_score - memory_penalty - stability_penalty)
+        # ── Phase 3: Hardware safety penalty ──
+        hw_penalty = 0.0
+        if not hw_safety["overall_safe"]:
+            hw_penalty = 0.1
+            memory_feedback += f" | HW DANGER: {hw_safety['thermal_risk']} thermal risk, mem={hw_safety['memory_utilization_pct']}%"
 
+        base_agent_score = avg_layer_score - memory_penalty - stability_penalty - hw_penalty
+
+        # ── Phase 4: Difference Rewards (Seminar Note 4) ──
+        # How much did THIS agent's choice affect the fleet?
+        # D_i = R(fleet) - R(fleet without agent_i)
+        fleet_memory = s["fleet_memory_used_gb"]
+        fleet_utilization = fleet_memory / cluster["total_memory_gb"]
+        fleet_reward_with = 1.0 - abs(fleet_utilization - 0.75)  # ideal = 75% util
+
+        # Fleet reward WITHOUT this agent (counterfactual)
+        fleet_memory_without = fleet_memory - metrics["memory_gb"]
+        fleet_util_without = fleet_memory_without / cluster["total_memory_gb"]
+        fleet_reward_without = 1.0 - abs(fleet_util_without - 0.75)
+
+        # Difference reward: positive = you helped, negative = you hurt
+        difference = fleet_reward_with - fleet_reward_without
+
+        # Blend: 70% individual score + 30% difference reward
+        blended_score = 0.7 * base_agent_score + 0.3 * max(0, difference + 0.5)
+        agent_score = clamp_score(blended_score)
+
+        # ── Phase 2: Breadcrumb feedback string ──
+        breadcrumb_str = " | Layers: " + ", ".join(breadcrumbs)
         feedback = (
             f"Agent {model_id} ({model['name']}): score={agent_score:.3f}, "
             f"mem={metrics['memory_gb']}GB, speedup={metrics['speedup_vs_fp32']}x, "
-            f"cost=${metrics['cost_usd']:,.0f}. {memory_feedback}"
+            f"cost=${metrics['cost_usd']:,.0f}. {memory_feedback}{breadcrumb_str}"
         )
 
         self.history.append({
@@ -275,6 +397,7 @@ class FleetEnvironment:
             "strategy": strategy,
             "score": agent_score,
             "metrics": metrics,
+            "hw_safety": hw_safety,
         })
 
         # Advance to next agent
@@ -341,9 +464,9 @@ class FleetEnvironment:
     #   Must identify WHICH model is crashing, WHEN, and WHY.
     # ═══════════════════════════════════════════════════════════════════════════
 
-    def _reset_fleet_oversight(self, scenarios: Dict) -> Dict[str, Any]:
+    def _reset_fleet_oversight(self, scenarios: Dict, scenario_id: Optional[str] = None) -> Dict[str, Any]:
         """Initialize fleet oversight monitoring episode."""
-        scenario_key = random.choice(list(scenarios.keys()))
+        scenario_key = scenario_id if scenario_id in scenarios else random.choice(list(scenarios.keys()))
         self.scenario = copy.deepcopy(scenarios[scenario_key])
 
         window_size = self.scenario["window_size"]
@@ -389,11 +512,30 @@ class FleetEnvironment:
         }
 
     def _step_fleet_oversight(self, action: Dict[str, Any]) -> Dict[str, Any]:
-        """Process oversight agent's monitoring decision."""
+        """Process oversight agent's monitoring decision.
+
+        Integrates:
+        - Phase 2: Breadcrumb progress signal (confidence ramps with safe scanning)
+        - Phase 5: IRD check for trigger-happy flagging
+        """
         s = self.task_state
         gt = self.scenario["ground_truth"]
         action_type = action.get("action_type", "continue_monitoring")
         self.step_number += 1
+
+        # ── Phase 5: IRD check ──
+        is_hacking, ird_penalty, ird_reason = self._detect_reward_hacking(action, "fleet_oversight")
+        if is_hacking:
+            score = clamp_score(0.05)
+            feedback = ird_reason
+            self.is_done = True
+            self.history.append({"step": self.step_number, "action": action_type, "score": score, "ird_blocked": True})
+            return {
+                "observation": None,
+                "reward": {"score": score, "feedback": feedback},
+                "done": True,
+                "info": {"ird_violation": True},
+            }
 
         if action_type == "flag_instability":
             s["flagged"] = True
@@ -401,6 +543,17 @@ class FleetEnvironment:
             score, feedback = self._grade_fleet_flag(action, gt, s["window_idx"])
 
         elif action_type == "continue_monitoring":
+            # BUG FIX: Check current window BEFORE incrementing
+            # (Composer found: was evaluating next window instead of observed one)
+            current_idx = s["window_idx"]
+            ws = s["window_size"]
+            has_issues = False
+            for model_id, traj_data in self.scenario["trajectories"].items():
+                window = traj_data["loss"][current_idx*ws:(current_idx+1)*ws]
+                if any(v != v for v in window if isinstance(v, float)):
+                    has_issues = True
+                    break
+
             s["window_idx"] += 1
             if s["window_idx"] >= s["total_windows"]:
                 # End of all windows
@@ -415,21 +568,16 @@ class FleetEnvironment:
                     score = 0.95
                     feedback = "CORRECT: All models healthy — no instability to flag. Good monitoring."
             else:
-                # Check if current window has obvious problems
-                ws = s["window_size"]
-                has_issues = False
-                for model_id, traj_data in self.scenario["trajectories"].items():
-                    window = traj_data["loss"][s["window_idx"]*ws:(s["window_idx"]+1)*ws]
-                    if any(v != v for v in window if isinstance(v, float)):
-                        has_issues = True
-                        break
-
+                # ── Phase 2: Breadcrumb progress signal ──
+                # Score gradually increases as more of the timeline is safely scanned
+                progress = s["window_idx"] / max(s["total_windows"], 1)
                 if has_issues:
                     score = 0.30
-                    feedback = f"Window {s['window_idx']}: Issues visible in fleet — consider flagging."
+                    feedback = f"Window {s['window_idx']}: Issues visible in fleet — consider flagging. [scanned {progress*100:.0f}%]"
                 else:
-                    score = 0.55
-                    feedback = f"Window {s['window_idx']}: Fleet looks stable. Continuing oversight."
+                    # Breadcrumb: reward increases with safe progress
+                    score = 0.40 + (0.15 * progress)
+                    feedback = f"Window {s['window_idx']}: Fleet looks stable. [scanned {progress*100:.0f}%, confidence={score:.2f}]"
                 self.is_done = False
 
         score = clamp_score(score)
@@ -496,9 +644,9 @@ class FleetEnvironment:
     #   Must balance priorities, efficiency, and fairness.
     # ═══════════════════════════════════════════════════════════════════════════
 
-    def _reset_fleet_resource(self, scenarios: Dict) -> Dict[str, Any]:
+    def _reset_fleet_resource(self, scenarios: Dict, scenario_id: Optional[str] = None) -> Dict[str, Any]:
         """Initialize fleet resource negotiation episode."""
-        scenario_key = random.choice(list(scenarios.keys()))
+        scenario_key = scenario_id if scenario_id in scenarios else random.choice(list(scenarios.keys()))
         self.scenario = copy.deepcopy(scenarios[scenario_key])
         cluster = self.scenario["cluster"]
         models = self.scenario["models"]
@@ -548,12 +696,33 @@ class FleetEnvironment:
         }
 
     def _step_fleet_resource(self, action: Dict[str, Any]) -> Dict[str, Any]:
-        """Process a resource allocation proposal."""
+        """Process a resource allocation proposal.
+
+        Integrates:
+        - Phase 2: Breadcrumb delta (shows improvement from previous iteration)
+        - Phase 4: Difference Rewards (counterfactual vs naive equal-split)
+        - Phase 5: IRD check for degenerate allocations
+        """
         s = self.task_state
         cluster = s["cluster"]
         allocations = action.get("allocations", {})
         self.step_number += 1
         s["iteration"] += 1
+
+        # ── Phase 5: IRD check ──
+        is_hacking, ird_penalty, ird_reason = self._detect_reward_hacking(action, "fleet_resource")
+        if is_hacking:
+            s["prev_feedback"] = ird_reason
+            done = s["iteration"] >= s["max_iterations"]
+            if done:
+                self.is_done = True
+            self.history.append({"step": self.step_number, "allocations": allocations, "score": 0.01, "ird_blocked": True})
+            return {
+                "observation": None if done else self._fleet_resource_observation(),
+                "reward": {"score": 0.01, "feedback": ird_reason},
+                "done": done,
+                "info": {"ird_violation": True},
+            }
 
         # allocations = { model_id: { "gpus": N, "precision_strategy": {...} } }
         total_gpus_assigned = 0
@@ -622,7 +791,7 @@ class FleetEnvironment:
         else:
             # Score components:
             # 1. Cost efficiency (how much saved vs FP32)
-            savings_pct = (fleet_fp32_cost - fleet_cost) / max(fleet_fp32_cost, 1) 
+            savings_pct = (fleet_fp32_cost - fleet_cost) / max(fleet_fp32_cost, 1)
             cost_score = min(1.0, savings_pct / 0.5)  # Normalize: 50% savings = perfect
 
             # 2. GPU utilization
@@ -636,17 +805,39 @@ class FleetEnvironment:
             all_stable = all(r.get("stable", False) for r in per_model_results.values())
             stability_bonus = 0.1 if all_stable else 0.0
 
-            score = clamp_score(
-                0.3 * cost_score + 0.25 * util_score + 0.25 * priority_score + 0.1 + stability_bonus
-            )
+            base_score = 0.3 * cost_score + 0.25 * util_score + 0.25 * priority_score + 0.1 + stability_bonus
+
+            # ── Phase 4: Difference Rewards ──
+            # Counterfactual: what if we used naive equal-split allocation?
+            naive_gpus = cluster["total_gpus"] // max(len(s["models"]), 1)
+            naive_cost = 0.0
+            for model in s["models"]:
+                naive_metrics = compute_training_cost(
+                    total_params=model["total_params"],
+                    precision_strategy={"embedding": "FP32", "attention": "BF16",
+                                        "ffn": "BF16", "layernorm": "BF16", "output": "FP32"},
+                    layer_distribution=model["layer_distribution"],
+                )
+                naive_cost += naive_metrics["cost_usd"]
+            # Agent's improvement over naive baseline
+            diff_reward = (naive_cost - fleet_cost) / max(naive_cost, 1)
+            # Blend: 80% base + 20% difference reward
+            score = clamp_score(0.8 * base_score + 0.2 * max(0, diff_reward + 0.3))
 
             fleet_savings = fleet_fp32_cost - fleet_cost
+
+            # ── Phase 2: Breadcrumb delta ──
+            prev_score = s.get("prev_score", 0.0)
+            delta = score - prev_score
+            delta_str = f" | {'↑' if delta > 0 else '↓'}{abs(delta):.3f} from last" if prev_score > 0 else ""
+
             feedback = (
                 f"Valid allocation! Fleet cost: ${fleet_cost:,.0f} (savings: ${fleet_savings:,.0f}). "
                 f"GPU utilization: {util*100:.0f}%. Priority alignment: {priority_score:.2f}. "
                 f"All stable: {all_stable}. Score: {score:.3f}. "
-                f"{s['max_iterations'] - s['iteration']} iterations remaining."
+                f"{s['max_iterations'] - s['iteration']} iterations remaining.{delta_str}"
             )
+            s["prev_score"] = score
 
         if score > s["best_score"]:
             s["best_score"] = score
@@ -698,12 +889,18 @@ class FleetEnvironment:
     #   One model crashes mid-training. Agent must diagnose and reallocate.
     # ═══════════════════════════════════════════════════════════════════════════
 
-    def _reset_fleet_recovery(self, fleet_scenarios: Dict, oversight_scenarios: Dict) -> Dict[str, Any]:
+    def _reset_fleet_recovery(self, fleet_scenarios: Dict, oversight_scenarios: Dict, scenario_id: Optional[str] = None) -> Dict[str, Any]:
         """Initialize fleet recovery episode — a crash has occurred."""
         # Pick a scenario with a crash
         crash_scenarios = {k: v for k, v in oversight_scenarios.items()
                           if v["ground_truth"]["crashing_model"] is not None}
-        scenario_key = random.choice(list(crash_scenarios.keys()))
+        scenario_key = None
+        if scenario_id is not None and scenario_id.startswith("recovery_"):
+            key = scenario_id[9:]
+            if key in crash_scenarios:
+                scenario_key = key
+        if scenario_key is None:
+            scenario_key = random.choice(list(crash_scenarios.keys()))
         oversight = copy.deepcopy(crash_scenarios[scenario_key])
 
         # Get the fleet config
@@ -781,11 +978,31 @@ class FleetEnvironment:
         return obs
 
     def _step_fleet_recovery(self, action: Dict[str, Any]) -> Dict[str, Any]:
-        """Process a fleet recovery action."""
+        """Process a fleet recovery action.
+
+        Integrates:
+        - Phase 4: Difference Rewards in reallocation (vs generic safe config)
+        - Phase 5: IRD check for empty/gaming recovery actions
+        """
         s = self.task_state
         self.step_number += 1
         s["iteration"] += 1
         gt = self.scenario["oversight"]["ground_truth"]
+
+        # ── Phase 5: IRD check ──
+        is_hacking, ird_penalty, ird_reason = self._detect_reward_hacking(action, "fleet_recovery")
+        if is_hacking:
+            s["prev_feedback"] = ird_reason
+            done = s["iteration"] >= s["max_iterations"]
+            if done:
+                self.is_done = True
+            self.history.append({"step": self.step_number, "phase": s["phase"], "score": 0.01, "ird_blocked": True})
+            return {
+                "observation": None if done else self._fleet_recovery_observation(),
+                "reward": {"score": 0.01, "feedback": ird_reason},
+                "done": done,
+                "info": {"ird_violation": True},
+            }
 
         phase = s["phase"]
 
@@ -845,7 +1062,12 @@ class FleetEnvironment:
         return clamp_score(round(score, 3)), " ".join(parts)
 
     def _grade_recovery_reallocation(self, action: Dict, state: Dict) -> tuple:
-        """Grade the reallocation plan for the crashed model."""
+        """Grade the reallocation plan for the crashed model.
+
+        Phase 4: Includes Difference Reward comparing agent's fix to a generic
+        safe fallback (BF16 everywhere). Agent gets bonus for being more
+        efficient than the naive fix while maintaining stability.
+        """
         new_strategy = action.get("new_precision_strategy", {})
         fleet = state["fleet"]
         crashed_id = state["crashed_model_id"]
@@ -888,6 +1110,19 @@ class FleetEnvironment:
         if metrics["speedup_vs_fp32"] > 1.5:
             score += 0.10
             parts.append(f"Efficient recovery: {metrics['speedup_vs_fp32']}x speedup (+0.10).")
+
+        # ── Phase 4: Difference Reward vs generic safe config ──
+        generic_safe = {"embedding": "FP32", "attention": "BF16",
+                        "ffn": "BF16", "layernorm": "BF16", "output": "FP32"}
+        generic_metrics = compute_training_cost(
+            total_params=crashed_model["total_params"],
+            precision_strategy=generic_safe,
+            layer_distribution=crashed_model["layer_distribution"],
+        )
+        if metrics["estimated_stable"] and metrics["speedup_vs_fp32"] > generic_metrics["speedup_vs_fp32"]:
+            diff_bonus = min(0.10, (metrics["speedup_vs_fp32"] - generic_metrics["speedup_vs_fp32"]) * 0.15)
+            score += round(diff_bonus, 3)
+            parts.append(f"Better than generic fix: {metrics['speedup_vs_fp32']}x vs {generic_metrics['speedup_vs_fp32']}x (+{diff_bonus:.3f}).")
 
         return clamp_score(round(score, 3)), " ".join(parts)
 

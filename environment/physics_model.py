@@ -169,24 +169,122 @@ DAYS_PER_BILLION_PARAMS_FP32 = 1.0   # Baseline: 1 day per billion params at FP3
 NUM_GPUS_BASELINE = 100              # Representative small training cluster
 GPU_HOURS_PER_BILLION_PARAMS = DAYS_PER_BILLION_PARAMS_FP32 * 24  # kept for backwards compat
 
+# ── Hardware Safety Constraints (Phase 3: "Model will melt GPU") ─────────────
+# Source: NVIDIA H100 SXM5 Thermal Design Specifications (2023)
+# These constraints prevent agents from pushing hardware beyond safe limits
+# while trying to maximize reward — a real problem in production GPU fleets.
+
+GPU_TDP_WATTS = 700            # H100 SXM5 Thermal Design Power
+GPU_THERMAL_LIMIT_C = 83       # Throttling begins at 83°C
+GPU_POWER_LIMIT_PCT = 100      # Maximum power percentage before throttling
+
+# Approximate power draw by precision format (relative to FP32 baseline)
+# Source: NVIDIA H100 power measurement data under various workloads
+# FP8 tensor cores draw significantly less power per FLOP
+POWER_DRAW_MULTIPLIER = {
+    "FP32": 1.00,   # Baseline: full precision, maximum power draw
+    "BF16": 0.70,   # Tensor cores ~30% more power-efficient than FP32
+    "FP16": 0.68,   # Slightly better than BF16 due to narrower format
+    "FP8":  0.55,   # Most power-efficient; ~45% savings vs FP32
+}
+
+# Safety thresholds — crossing these risks hardware damage or job failure
+MEMORY_UTILIZATION_DANGER = 0.95    # >95% memory = OOM crash risk
+MEMORY_UTILIZATION_WARNING = 0.85   # >85% memory = fragmentation risk
+POWER_UTILIZATION_DANGER = 0.90     # >90% power = thermal throttling
+
+
+def compute_hardware_safety(
+    total_params: int,
+    precision_strategy: dict,
+    layer_distribution: dict,
+    num_gpus: int = 1,
+    gpu_memory_gb: float = 80.0,
+) -> dict:
+    """
+    Compute hardware safety metrics for a given precision configuration.
+
+    This implements the "hardware dashboard" concept from the seminar:
+    agents need visibility into thermal/power/memory limits to avoid
+    configurations that would literally melt the GPU while chasing max reward.
+
+    Returns:
+        memory_per_gpu_gb, memory_utilization_pct, memory_safe,
+        estimated_power_pct, power_safe, thermal_risk, overall_safe
+    """
+    # Memory per GPU
+    total_mem_gb = 0.0
+    for layer_type, fraction in layer_distribution.items():
+        precision = precision_strategy.get(layer_type, "FP32")
+        params_in_layer = total_params * fraction
+        mem_gb = (params_in_layer * BYTES_PER_PARAM.get(precision, 4)) / 1e9
+        total_mem_gb += mem_gb
+
+    mem_per_gpu = total_mem_gb / max(num_gpus, 1)
+    mem_utilization = mem_per_gpu / gpu_memory_gb
+
+    # Power estimate (weighted average across layers)
+    weighted_power = 0.0
+    total_weight = 0.0
+    for layer_type, fraction in layer_distribution.items():
+        precision = precision_strategy.get(layer_type, "FP32")
+        power = POWER_DRAW_MULTIPLIER.get(precision, 1.0)
+        weighted_power += power * fraction
+        total_weight += fraction
+
+    avg_power = weighted_power / max(total_weight, 0.001)
+    power_pct = avg_power * 100  # as percentage of FP32 baseline
+
+    # Thermal risk assessment
+    if mem_utilization > MEMORY_UTILIZATION_DANGER or power_pct > POWER_UTILIZATION_DANGER * 100:
+        thermal_risk = "CRITICAL"
+    elif mem_utilization > MEMORY_UTILIZATION_WARNING:
+        thermal_risk = "HIGH"
+    elif mem_utilization > 0.70:
+        thermal_risk = "MODERATE"
+    else:
+        thermal_risk = "LOW"
+
+    return {
+        "memory_per_gpu_gb": round(mem_per_gpu, 2),
+        "memory_utilization_pct": round(mem_utilization * 100, 1),
+        "memory_safe": mem_utilization < MEMORY_UTILIZATION_DANGER,
+        "estimated_power_pct": round(power_pct, 1),
+        "power_safe": power_pct < POWER_UTILIZATION_DANGER * 100,
+        "thermal_risk": thermal_risk,
+        "overall_safe": (
+            mem_utilization < MEMORY_UTILIZATION_DANGER
+            and power_pct < POWER_UTILIZATION_DANGER * 100
+        ),
+    }
+
 
 def compute_training_cost(
     total_params: int,
     precision_strategy: dict,
     layer_distribution: dict,
-    num_epochs: float = 1.0
+    num_epochs: float = 1.0,
+    num_gpus: int = None,
+    cost_per_gpu_hour: float = None,
 ) -> dict:
     """
     Compute real dollar cost and training time for a given precision strategy.
 
     Time model: normalized days = (params_in_billions * DAYS_PER_BILLION_PARAMS_FP32) / speedup
-    Cost model: training_days * 24 * H100 rate * num GPUs in cluster
+    Cost model: training_days * 24 * cost_per_hour * num_gpus
+
+    Args:
+        num_gpus: Override cluster GPU count (default: NUM_GPUS_BASELINE=100)
+        cost_per_gpu_hour: Override hourly rate (default: H100_COST_PER_HOUR_USD=3.00)
 
     Returns:
         memory_gb, speedup_vs_fp32, training_hours, training_days,
         cost_usd, fp32_baseline_cost_usd, savings_usd, savings_pct,
         accuracy_retention, estimated_stable
     """
+    gpus = num_gpus if num_gpus is not None else NUM_GPUS_BASELINE
+    rate = cost_per_gpu_hour if cost_per_gpu_hour is not None else H100_COST_PER_HOUR_USD
+
     total_mem_gb = 0.0
     weighted_speedup = 0.0
     total_accuracy_penalty = 0.0
@@ -197,7 +295,7 @@ def compute_training_cost(
         precision = precision_strategy.get(layer_type, "FP32")
         params_in_layer = total_params * fraction
 
-        # Memory: bytes → GB
+        # Memory: bytes -> GB
         mem_gb = (params_in_layer * BYTES_PER_PARAM[precision]) / 1e9
         total_mem_gb += mem_gb
 
@@ -206,9 +304,9 @@ def compute_training_cost(
         weighted_speedup += speedup * fraction
         total_weight += fraction
 
-        # Accuracy penalty
+        # Accuracy penalty (BUG FIX: weight by layer fraction, not raw sum)
         penalty = ACCURACY_PENALTY[layer_type][precision]
-        total_accuracy_penalty += penalty
+        total_accuracy_penalty += penalty * fraction
 
         # Stability check
         stability = STABILITY_SCORE[layer_type][precision]
@@ -223,8 +321,8 @@ def compute_training_cost(
     actual_days = fp32_days / avg_speedup
 
     # Dollar cost: days * 24 hours * cost_per_hour * num_gpus
-    fp32_cost = fp32_days * 24 * H100_COST_PER_HOUR_USD * NUM_GPUS_BASELINE
-    actual_cost = actual_days * 24 * H100_COST_PER_HOUR_USD * NUM_GPUS_BASELINE
+    fp32_cost = fp32_days * 24 * rate * gpus
+    actual_cost = actual_days * 24 * rate * gpus
     savings = fp32_cost - actual_cost
 
     return {

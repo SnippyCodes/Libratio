@@ -30,12 +30,12 @@ fleet_env = FleetEnvironment()
 
 
 def _clamp_score(raw_score) -> float:
-    """Defense-in-depth: clamp score to strict (0, 1) open interval."""
+    """Defense-in-depth: clamp score to strict (0.01, 0.99) interval."""
     try:
         val = float(raw_score)
     except (ValueError, TypeError):
         val = 0.01
-    return float(max(0.001, min(0.999, val)))
+    return float(max(0.01, min(0.99, val)))
 
 
 @app.get("/")

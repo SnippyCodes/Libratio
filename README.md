@@ -79,6 +79,21 @@ GET  /fleet/tasks  ->  {}            ->  Task Definitions (4 tasks)
 
 ---
 
+## RL Techniques Implemented
+
+Insights from Sam Burtenshaw's & Satyam Bhutani's RL Seminar + Daniel's QLoRA session, mapped to production code:
+
+| Technique | Seminar Insight | Implementation |
+|---|---|---|
+| **Scenario Diversity** | "Small datasets generalize poorly" | 7 fleet configs (micro to mega), 8 oversight scenarios (cascading failures, false-positive traps) |
+| **Breadcrumb Rewards** | "Place breadcrumbs so model doesn't wander" | Per-layer `[OK]/[!!]` precision feedback, progress-scaled monitoring confidence, iteration deltas |
+| **Hardware Safety** | "Model will literally melt GPU" | `compute_hardware_safety()` checks memory/power/thermal limits from NVIDIA H100 specs |
+| **Difference Rewards** | "Find the slow node" | Counterfactual scoring in precision (fleet memory), resource (vs naive split), recovery (vs generic fix) |
+| **Inverse Reward Design** | "Stop reward hacking" | `_detect_reward_hacking()` catches all-FP8, model starvation, trigger-happy flagging, empty actions |
+| **QLoRA + GRPO** | "Merge LoRA weights back to 16-bit" | Full pipeline: 4-bit QLoRA via Unsloth -> GRPO training -> merge -> vLLM |
+
+---
+
 ## Fleet Tasks
 
 | Task | Difficulty | Steps | What Happens |
@@ -185,13 +200,13 @@ One model crashes. Diagnose -> fix -> verify in 3 steps.
 
 ## Reward Functions
 
-**Fleet Precision:** Per-agent layer scoring (physics model) + memory fairness + fleet stability bonus
+**Fleet Precision:** Per-agent layer scoring (physics model) + memory fairness + fleet stability bonus + **Difference Reward** (counterfactual fleet contribution) + **Hardware Safety** penalty (thermal/power limits) + **IRD** (blocks all-FP8/all-FP32) + **Breadcrumbs** (per-layer `[OK]/[~~]/[!!]` feedback)
 
-**Fleet Oversight:** Correct model ID (+0.25) + correct timing (+0.20) + root cause (+0.25) + base detection (+0.30). False alarm = 0.10.
+**Fleet Oversight:** Correct model ID (+0.25) + correct timing (+0.20) + root cause (+0.25) + base detection (+0.30). False alarm = 0.10. + **IRD** (blocks trigger-happy first-window flagging) + **Breadcrumbs** (progress-scaled confidence: 0.40 -> 0.55 with safe scanning)
 
-**Fleet Resource:** Cost efficiency (30%) + GPU utilization (25%) + priority alignment (25%) + validity (10%) + stability (10%)
+**Fleet Resource:** Cost efficiency (30%) + GPU utilization (25%) + priority alignment (25%) + validity (10%) + stability (10%) + **Difference Reward** (vs naive equal-split baseline) + **IRD** (blocks empty/starved allocations) + **Breadcrumbs** (delta indicator showing improvement)
 
-**Fleet Recovery:** Diagnosis accuracy (phase 1) + config stability (phase 2) + reasoning quality (phase 3)
+**Fleet Recovery:** Diagnosis accuracy (phase 1) + config stability (phase 2) + reasoning quality (phase 3) + **Difference Reward** (vs generic BF16-everywhere fallback) + **IRD** (blocks near-empty recovery attempts)
 
 ---
 
@@ -240,17 +255,20 @@ python fleet_inference.py
 ```text
 Libratio/
   environment/
-    fleet_env.py             # Multi-agent fleet environment (4 tasks)
-    physics_model.py         # Empirical benchmark constants
+    fleet_env.py             # Multi-agent fleet environment (4 tasks + IRD + breadcrumbs)
+    physics_model.py         # Empirical benchmark constants + hardware safety dashboard
   scenarios/
-    fleet_scenarios.py       # Fleet configs + oversight scenarios
-    task1-4_scenarios.py     # Single-agent scenarios
+    fleet_scenarios.py       # 7 fleet configs + 8 oversight scenarios
+    task1-4_scenarios.py     # Single-agent scenarios (legacy)
   server/
     app.py                   # FastAPI: /fleet/* and /* endpoints
     models.py                # Pydantic models
   notebooks/
-    final_colab_training.ipynb # GRPO RL training pipeline
+    qlora_grpo_training.py   # QLoRA + GRPO training pipeline (Colab-ready)
+    final_colab_training.ipynb # Legacy GRPO notebook
   fleet_inference.py         # Multi-agent LLM inference script
+  train_fleet.py             # Direct training (no server needed)
+  test_fleet.py              # Smoke tests for all 4 tasks
   openenv.yaml               # OpenEnv spec (fleet tasks)
   Dockerfile
 ```
