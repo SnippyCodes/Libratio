@@ -25,13 +25,14 @@ print("Dependencies installed!")
 
 # ── Step 2: Clone your repo ────────────────────────────────
 import os
+import subprocess
 
 REPO_URL = "https://github.com/SnippyCodes/Libratio.git"  # <-- UPDATE THIS to your actual GitHub repo URL
 REPO_DIR = "./Libratio"
 
 if not os.path.exists(REPO_DIR):
     print(f"Cloning repo from {REPO_URL}...")
-    os.system(f"git clone {REPO_URL} {REPO_DIR}")
+    subprocess.check_call(["git", "clone", REPO_URL, REPO_DIR])
 else:
     print(f"Repo already exists at {REPO_DIR}")
 
@@ -67,14 +68,60 @@ Return ONLY valid JSON:
 {"precision_strategy": {"embedding": "FP32", "attention": "BF16", "ffn": "FP8", "layernorm": "BF16", "output": "FP32"}, "reasoning": "..."}"""
 
 
+def build_meta_header(task_id, scenario_id):
+    """Embed deterministic metadata for reward replay."""
+    return f"[META] task_id={task_id}; scenario_id={scenario_id}"
+
+
+def extract_meta_from_prompt(prompt, fallback_task_id="fleet_precision"):
+    """Extract metadata from prompt text."""
+    text = str(prompt)
+    task_id = fallback_task_id
+    scenario_id = None
+
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("[META]"):
+            continue
+        payload = line[len("[META]"):].strip()
+        for chunk in payload.split(";"):
+            if "=" not in chunk:
+                continue
+            key, val = chunk.split("=", 1)
+            key = key.strip()
+            val = val.strip()
+            if key == "task_id" and val:
+                task_id = val
+            elif key == "scenario_id" and val:
+                scenario_id = val
+        break
+
+    return {"task_id": task_id, "scenario_id": scenario_id}
+
+
+def completion_to_text(completion):
+    """Handle different TRL completion payload formats."""
+    if isinstance(completion, list):
+        if not completion:
+            return ""
+        last = completion[-1]
+        if isinstance(last, dict):
+            return str(last.get("content", ""))
+        return str(last)
+    return str(completion)
+
+
 def build_prompts(task_id="fleet_precision", n=128):
     """Generate diverse training prompts from fleet scenarios."""
     env = FleetEnvironment()
     out = []
     for _ in range(n):
         obs = env.reset(task_id)
+        scenario_id = obs.get("scenario_id", "")
+        meta_header = build_meta_header(task_id, scenario_id)
         out.append({
             "prompt": (
+                f"{meta_header}\n"
                 f"{SYSTEM_PROMPT}\n\n"
                 f"Observation:\n{json.dumps(obs, indent=2, default=str)}\n\n"
                 f"Return JSON action only."
@@ -98,33 +145,23 @@ def fleet_reward_function(completions, prompts, **kwargs):
     """GRPO reward: score each completion against fleet environment."""
     rewards = []
     for completion, prompt in zip(completions, prompts):
+        reward = 0.05
         try:
-            # Handle different TRL versions
-            if isinstance(completion, list):
-                text = completion[-1].get("content", "") if completion else ""
-            else:
-                text = str(completion)
-                
-            prompt_text = str(prompt)
-            
-            # Extract scenario_id from the JSON observation in the prompt
-            scenario_id = None
-            if "Observation:\n{" in prompt_text:
-                try:
-                    obs_str = prompt_text.split("Observation:\n")[1].split("\n\nReturn")[0]
-                    obs = json.loads(obs_str)
-                    scenario_id = obs.get("scenario_id")
-                except:
-                    pass
+            text = completion_to_text(completion)
+            meta = extract_meta_from_prompt(prompt, fallback_task_id="fleet_precision")
 
             action = parse_json_action(text)
             env = FleetEnvironment()
-            env.reset("fleet_precision", scenario_id=scenario_id)
+            env.reset(meta["task_id"], scenario_id=meta["scenario_id"])
             result = env.step(action)
             r = clamp(result["reward"]["score"]) + 0.03  # bonus for valid JSON
-            rewards.append(clamp(r))
-        except Exception:
-            rewards.append(0.05)
+            reward = clamp(r)
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            reward = 0.05
+        except Exception as e:
+            print(f"[REWARD WARNING] Unexpected reward error: {type(e).__name__}: {e}")
+            reward = 0.05
+        rewards.append(reward)
     return rewards
 
 
@@ -183,6 +220,7 @@ cfg = GRPOConfig(
     gradient_accumulation_steps=4,
     learning_rate=2e-5,
     num_train_epochs=2,
+    max_steps=850,                 # Cap at 850 steps (saves ~15% GPU cost vs 1000)
     max_completion_length=512,
     logging_steps=10,
     save_steps=50,

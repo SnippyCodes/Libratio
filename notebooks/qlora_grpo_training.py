@@ -96,6 +96,50 @@ RESPOND WITH ONLY valid JSON:
 {"precision_strategy": {"embedding": "FP32", "attention": "BF16", "ffn": "FP8", "layernorm": "BF16", "output": "FP32"}, "reasoning": "explanation"}"""
 
 
+def _build_meta_header(task_id: str, scenario_id: str) -> str:
+    """Attach deterministic metadata for reward reconstruction."""
+    return f"[META] task_id={task_id}; scenario_id={scenario_id}"
+
+
+def _extract_meta_from_prompt(prompt: Any, fallback_task_id: str) -> Dict[str, str]:
+    """Extract task/scenario metadata from a prompt string."""
+    text = str(prompt)
+    marker = "[META]"
+    task_id = fallback_task_id
+    scenario_id = None
+
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith(marker):
+            continue
+        payload = line[len(marker):].strip()
+        for chunk in payload.split(";"):
+            if "=" not in chunk:
+                continue
+            key, val = chunk.split("=", 1)
+            key = key.strip()
+            val = val.strip()
+            if key == "task_id" and val:
+                task_id = val
+            elif key == "scenario_id" and val:
+                scenario_id = val
+        break
+
+    return {"task_id": task_id, "scenario_id": scenario_id}
+
+
+def _extract_completion_text(completion: Any) -> str:
+    """Handle different TRL completion payload formats safely."""
+    if isinstance(completion, list):
+        if not completion:
+            return ""
+        last = completion[-1]
+        if isinstance(last, dict):
+            return str(last.get("content", ""))
+        return str(last)
+    return str(completion)
+
+
 def build_training_prompts(task_id: str = "fleet_precision", num_prompts: int = 100):
     """Generate training prompts by resetting the fleet environment multiple times.
 
@@ -108,10 +152,12 @@ def build_training_prompts(task_id: str = "fleet_precision", num_prompts: int = 
 
     for _ in range(num_prompts):
         obs = env.reset(task_id)
+        scenario_id = obs.get("scenario_id", "")
+        meta_header = _build_meta_header(task_id=task_id, scenario_id=scenario_id)
         prompt = f"Current environment state:\n{json.dumps(obs, indent=2, default=str)}\n\nProvide your action as JSON."
 
         prompts.append({
-            "prompt": prompt,
+            "prompt": f"{meta_header}\n{prompt}",
             "system": FLEET_SYSTEM_PROMPT,
         })
 
@@ -135,13 +181,13 @@ def fleet_reward_function(completions: List[str], prompts: List[str],
     - Inverse Reward Design (degenerate action penalty)
     - Hardware safety checks (thermal/memory/power)
     """
-    env = FleetEnvironment()
     rewards = []
 
     for completion, prompt in zip(completions, prompts):
+        reward = 0.05
         try:
             # Parse JSON from completion
-            content = completion.strip()
+            content = _extract_completion_text(completion).strip()
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0].strip()
             elif "```" in content:
@@ -149,19 +195,24 @@ def fleet_reward_function(completions: List[str], prompts: List[str],
 
             action = json.loads(content)
 
-            # Run against environment
-            obs = env.reset(task_id)
+            # Reconstruct the exact scenario from prompt metadata for deterministic credit assignment
+            meta = _extract_meta_from_prompt(prompt, fallback_task_id=task_id)
+            env = FleetEnvironment()
+            env.reset(meta["task_id"], scenario_id=meta["scenario_id"])
             result = env.step(action)
             reward = float(result["reward"]["score"])
 
             # Bonus for valid JSON (format compliance)
             reward += 0.05
 
-        except (json.JSONDecodeError, KeyError, TypeError) as e:
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
             # Invalid JSON or missing fields = low reward
             reward = 0.05  # Not 0 — GRPO needs non-zero for gradient signal
+        except Exception as e:
+            print(f"[REWARD WARNING] Unexpected reward error: {type(e).__name__}: {e}")
+            reward = 0.05
 
-        rewards.append(max(0.01, min(1.0, reward)))
+        rewards.append(max(0.01, min(0.99, reward)))
 
     return rewards
 
@@ -218,6 +269,7 @@ def run_grpo_training(
         gradient_accumulation_steps=4,
         learning_rate=learning_rate,
         num_train_epochs=num_epochs,
+        max_steps=850,               # Cap at 850 steps (saves GPU cost)
         max_completion_length=512,
         logging_steps=10,
         save_steps=50,
