@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Libratio Fleet | GPU Cluster Simulator</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="/frontend/styles.css" />
+  </head>
+  <body>
+
+    <!-- TOP BAR -->
+    <header id="topbar">
+      <div class="topbar-inner">
+        <span class="logo">LIBRATIO FLEET</span>
+        <span class="env-badge">GPU CLUSTER SIMULATOR</span>
+        <button id="kernelToggle" class="env-badge kernel-badge" onclick="toggleKernelPanel()">AGENTIC KERNEL PROTOTYPE</button>
+        <div class="topbar-right">
+          <div class="tooltip-container">
+            <button id="breakAgentBtn" class="btn-topbar">⚡ BREAK THE AGENT (DEMO)</button>
+            <span class="tooltip-text">Launch a side-by-side comparison. Watch the trained agent optimize resources while the random baseline crashes the cluster in real time.</span>
+          </div>
+          <a href="https://huggingface.co/SnippyCodes/libratio-fleet-llama3-grpo" target="_blank">Model Hub</a>
+          <a href="https://github.com/SnippyCodes/Libratio" target="_blank">GitHub</a>
+        </div>
+      </div>
+    </header>
+
+    <!-- AGENTIC KERNEL PERFORMANCE PANEL -->
+    <div id="kernelPanel" class="kernel-panel" style="display: none;">
+      <div class="kernel-inner">
+
+        <div class="kernel-header">
+          <h2>AGENTIC KERNEL LIVE BENCHMARK</h2>
+          <span class="kernel-desc">Pure-math physics evaluation replaces 100ms+ Docker/VM sandboxes with microsecond-latency reward computation</span>
+          <button id="runBenchBtn" class="btn-bench" onclick="runKernelBenchmark()">RUN BENCHMARK (1,000 trajectories)</button>
+        </div>
+
+        <div class="kernel-grid">
+          <!-- Throughput card -->
+          <div class="k-card">
+            <div class="k-card-title">THROUGHPUT</div>
+            <div class="k-big-number" id="kThroughput">--</div>
+            <div class="k-unit">trajectories / sec</div>
+            <div class="k-sub" id="kThroughputSub">Click RUN BENCHMARK to measure</div>
+          </div>
+
+          <!-- Latency card -->
+          <div class="k-card">
+            <div class="k-card-title">PER-TRAJECTORY LATENCY</div>
+            <div class="k-big-number" id="kLatency">--</div>
+            <div class="k-unit">microseconds</div>
+            <div class="k-sub" id="kLatencySub">vs 150,000 us (Docker) / 125,000 us (MicroVM)</div>
+          </div>
+
+          <!-- Speedup card -->
+          <div class="k-card">
+            <div class="k-card-title">SPEEDUP vs DOCKER</div>
+            <div class="k-big-number" id="kSpeedup">--</div>
+            <div class="k-unit">times faster</div>
+            <div class="k-sub" id="kSpeedupSub">Sandbox ratio problem eliminated</div>
+          </div>
+
+          <!-- Status card -->
+          <div class="k-card">
+            <div class="k-card-title">SANDBOX RATIO</div>
+            <div class="k-big-number" id="kStatus">PENDING</div>
+            <div class="k-unit" id="kStatusUnit">run benchmark to verify</div>
+            <div class="k-sub" id="kStatusSub">Target: environment never bottlenecks GPU</div>
+          </div>
+        </div>
+
+        <!-- Module breakdown -->
+        <div class="kernel-modules">
+          <div class="km-title">KERNEL MODULE BREAKDOWN</div>
+          <div class="km-grid" id="kmGrid" style="grid-template-columns: repeat(4, 1fr);">
+            <div class="km-card">
+              <div class="km-name">precision_kernel</div>
+              <div class="km-bar-track"><div class="km-bar" id="kmBar1" style="width:0%"></div></div>
+              <div class="km-val" id="kmVal1">-- us</div>
+              <div class="km-desc">VRAM, throughput, cost, stability</div>
+            </div>
+            <div class="km-card">
+              <div class="km-name">safety_kernel</div>
+              <div class="km-bar-track"><div class="km-bar safety" id="kmBar2" style="width:0%"></div></div>
+              <div class="km-val" id="kmVal2">-- us</div>
+              <div class="km-desc">Thermal, power, memory checks</div>
+            </div>
+            <div class="km-card">
+              <div class="km-name">scoring_kernel</div>
+              <div class="km-bar-track"><div class="km-bar scoring" id="kmBar3" style="width:0%"></div></div>
+              <div class="km-val" id="kmVal3">-- us</div>
+              <div class="km-desc">Per-layer precision quality scoring</div>
+            </div>
+            <div class="km-card">
+              <div class="km-name">network_kernel</div>
+              <div class="km-bar-track"><div class="km-bar" id="kmBar4" style="background: linear-gradient(90deg, #2979ff, #00e5ff); width:0%"></div></div>
+              <div class="km-val" id="kmVal4">-- us</div>
+              <div class="km-desc">PCIe/NVLink communication overhead</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Comparison bar chart -->
+        <div class="kernel-comparison">
+          <div class="km-title">EVALUATION LATENCY COMPARISON</div>
+          <div class="kc-row">
+            <span class="kc-label">Agentic Kernel</span>
+            <div class="kc-bar-track"><div class="kc-bar kernel" id="kcBarKernel" style="width:1%"></div></div>
+            <span class="kc-val" id="kcValKernel">-- us</span>
+          </div>
+          <div class="kc-row">
+            <span class="kc-label">Firecracker VM</span>
+            <div class="kc-bar-track"><div class="kc-bar vm"></div></div>
+            <span class="kc-val">125,000 us</span>
+          </div>
+          <div class="kc-row">
+            <span class="kc-label">Docker Container</span>
+            <div class="kc-bar-track"><div class="kc-bar docker"></div></div>
+            <span class="kc-val">150,000 us</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="dashboard">
+
+      <!-- LEFT SIDEBAR -->
+      <aside class="sidebar">
+        <div class="sb-section">
+          <div class="sb-title">SCENARIO CONTROL</div>
+          <select id="taskSelect">
+            <optgroup label="Core Tasks">
+              <option value="fleet_precision">1. Precision Assignment (Optimize VRAM under constraints)</option>
+              <option value="fleet_oversight">2. Fleet Oversight (Detect cascading loss failures)</option>
+              <option value="fleet_resource">3. Resource Negotiation (Allocate GPUs to competing models)</option>
+              <option value="fleet_recovery">4. Crash Recovery (Diagnose and reconfigure mid-flight)</option>
+            </optgroup>
+          </select>
+          <button id="resetBtn" class="btn-reset">RESET EPISODE</button>
+          <button id="stepBtn" class="btn-step">STEP ENVIRONMENT</button>
+        </div>
+
+        <div class="sb-section">
+          <div class="sb-title">CLUSTER METRICS</div>
+          
+          <!-- BIG HEALTH SCORES -->
+          <div class="health-scores" id="healthScoresWrapper">
+            <div class="health-box primary">
+              <span class="h-label">TRAINED HEALTH</span>
+              <span class="h-val" id="healthTrained">--</span>
+            </div>
+            <div class="health-box secondary" id="healthBoxRandom" style="display:none;">
+              <span class="h-label">BASELINE HEALTH</span>
+              <span class="h-val" id="healthRandom">--</span>
+            </div>
+          </div>
+
+          <div class="metric"><span>GPUs Online</span><span class="metric-val" id="mGpus">8</span></div>
+          <div class="metric"><span>Total VRAM</span><span class="metric-val" id="mVram">640 GB</span></div>
+          <div class="metric"><span>VRAM Used</span><span class="metric-val metric-warn" id="mUsed">0 GB</span></div>
+          <div class="metric"><span>VRAM Free</span><span class="metric-val metric-good" id="mFree">640 GB</span></div>
+          <div class="metric"><span>Step</span><span class="metric-val" id="mStep">Step 0 of 5</span></div>
+          <div class="vram-pool">
+            <div class="vram-pool-fill" id="vramFill"></div>
+          </div>
+          <div class="vram-pct" id="vramPct">0% utilized</div>
+        </div>
+
+        <div class="sb-section chart-section">
+          <div class="sb-title">LIVE REWARD TIMELINE</div>
+          <div class="chart-container">
+            <canvas id="rewardChart"></canvas>
+          </div>
+        </div>
+
+        <div class="sb-section">
+          <div class="sb-title">ACTION JSON</div>
+          <textarea id="actionInput" spellcheck="false"></textarea>
+        </div>
+      </aside>
+
+      <!-- MAIN AREA -->
+      <main class="main-area">
+
+        <!-- GPU RACK COMPARISON CONTAINER -->
+        <div class="rack-comparison">
+          <!-- RACK A (Trained Agent) -->
+          <section class="gpu-rack" id="rackA">
+            <div class="rack-header">
+              <h2>TRAINED AGENT RACK</h2>
+              <span class="rack-status" id="rackStatus">STANDBY</span>
+            </div>
+            <div class="rack-grid" id="rackGrid"></div>
+          </section>
+
+          <!-- RACK B (Random Agent - Hidden by default) -->
+          <section class="gpu-rack" id="rackB" style="display: none;">
+            <div class="rack-header">
+              <h2>RANDOM BASELINE RACK</h2>
+              <span class="rack-status error" id="rackStatusRandom">STANDBY</span>
+            </div>
+            <div class="rack-grid" id="rackGridRandom"></div>
+          </section>
+        </div>
+
+        <!-- AGENT REASONING FEED -->
+        <section class="reasoning-section">
+          <div class="rack-header">
+            <h2>AGENT REASONING FEED</h2>
+            <div class="efficiency-badge" id="efficiencyBadge" style="display:none;">Pareto Efficiency: --</div>
+          </div>
+          <div class="reasoning-feed" id="reasoningFeed">
+            <div class="thought-bubble sys-thought">Awaiting environment reset to begin analysis...</div>
+          </div>
+        </section>
+
+      </main>
+
+      <!-- RIGHT PANEL (Replaced Raw JSON with Structured Visuals) -->
+      <aside class="sidebar sidebar-right">
+        
+        <div class="sb-section">
+          <div class="sb-title"><span class="ind ind-green"></span> TELEMETRY DASHBOARD</div>
+          
+          <div id="structuredObs" class="telemetry-panel">
+            <div class="telemetry-empty">No active telemetry. Reset episode to begin.</div>
+          </div>
+        </div>
+
+        <div class="sb-section">
+          <div class="sb-title"><span class="ind ind-amber"></span> RESULT LOG</div>
+          <pre class="json-box" id="resBox">{}</pre>
+        </div>
+      </aside>
+
+    </div>
+
+    <script src="/frontend/main.js"></script>
+    <script src="/frontend/kernel.js"></script>
+  </body>
+</html>

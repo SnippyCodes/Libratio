@@ -280,18 +280,27 @@ for log in history:
 plot_steps = []
 plot_rewards = []
 plot_losses = []
+plot_lrs = []
+plot_lengths = []
+
 for i in range(len(steps)):
     if i < len(rewards) and i < len(losses) and rewards[i] is not None and losses[i] is not None:
         plot_steps.append(steps[i])
         plot_rewards.append(rewards[i])
         plot_losses.append(losses[i])
+        
+        # Try to extract LR and Completion Length if they exist
+        lr = history[i].get("learning_rate", 0)
+        cl = history[i].get("completion_length", 0)
+        plot_lrs.append(lr)
+        plot_lengths.append(cl)
 
 if plot_steps:
     # 1. Plot Reward Curve
     plt.figure(figsize=(10, 5))
     plt.plot(plot_steps, plot_rewards, label="Mean Reward", color="#00e676", linewidth=2)
     plt.axhline(y=0.90, color="r", linestyle="--", label="Target (>0.90)")
-    plt.title("Libratio Fleet: GRPO Reward Curve (500 steps)")
+    plt.title("Libratio Fleet: GRPO Reward Optimization (500 steps)")
     plt.xlabel("Training Steps")
     plt.ylabel("Reward Score")
     plt.grid(True, alpha=0.3)
@@ -302,8 +311,8 @@ if plot_steps:
 
     # 2. Plot Loss Curve
     plt.figure(figsize=(10, 5))
-    plt.plot(plot_steps, plot_losses, label="Training Loss", color="#ff1744", linewidth=2)
-    plt.title("Libratio Fleet: GRPO Loss Curve (500 steps)")
+    plt.plot(plot_steps, plot_losses, label="Policy Loss", color="#ff1744", linewidth=2)
+    plt.title("Libratio Fleet: Model Loss Curve")
     plt.xlabel("Training Steps")
     plt.ylabel("Loss")
     plt.grid(True, alpha=0.3)
@@ -312,13 +321,39 @@ if plot_steps:
     plt.savefig(loss_path, dpi=300, bbox_inches="tight")
     plt.close()
 
-    # 3. Save raw JSON data
+    # 3. Plot Learning Rate Schedule
+    plt.figure(figsize=(10, 5))
+    plt.plot(plot_steps, plot_lrs, label="Learning Rate", color="#d500f9", linewidth=2)
+    plt.title("Libratio Fleet: Learning Rate Schedule")
+    plt.xlabel("Training Steps")
+    plt.ylabel("Learning Rate")
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    lr_path = "./results/lr_schedule.png"
+    plt.savefig(lr_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+    # 4. Plot Action Token Length Stability
+    plt.figure(figsize=(10, 5))
+    plt.plot(plot_steps, plot_lengths, label="Action Token Length", color="#00e5ff", linewidth=2)
+    plt.title("Libratio Fleet: JSON Output Stability")
+    plt.xlabel("Training Steps")
+    plt.ylabel("Generated Tokens per Action")
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    len_path = "./results/action_length.png"
+    plt.savefig(len_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+    # 5. Save raw JSON data
     with open("./results/training_logs.json", "w") as f:
         json.dump(history, f, indent=2)
 
     print(f"\nSaved training artifacts:")
     print(f"  - Reward Curve: {reward_path}")
     print(f"  - Loss Curve: {loss_path}")
+    print(f"  - LR Schedule: {lr_path}")
+    print(f"  - Action Length: {len_path}")
     print(f"  - Raw Logs: ./results/training_logs.json")
 else:
     print("\n[WARNING] Not enough logging data to generate plots. Check 'logging_steps' in GRPOConfig.")

@@ -405,3 +405,69 @@ def score_precision_layer(layer_type: str, precision: str) -> tuple[float, str]:
         f"{sources.get(precision, '')} | {verdict}"
     )
     return score, feedback
+
+# ══════════════════════════════════════════════════════════════════════════════
+# NEW KERNEL MODULE: Network Topology & Communication Latency
+# ══════════════════════════════════════════════════════════════════════════════
+# Source: NVIDIA Hopper Architecture In-Depth (2022)
+
+# Bandwidth in GB/s (unidirectional)
+BANDWIDTH_GBS = {
+    "PCIe_Gen4": 32.0,       # Cheap multi-GPU / cloud instances
+    "PCIe_Gen5": 64.0,       # Modern cloud instances
+    "NVLink_v3": 300.0,      # A100 intra-node (600GB/s bidirectional)
+    "NVLink_v4": 450.0,      # H100 intra-node (900GB/s bidirectional)
+    "InfiniBand_NDR": 50.0,  # 400Gbps cross-node networking
+}
+
+def compute_network_topology(
+    topology_type: str,
+    tensor_parallel_size: int,
+    pipeline_parallel_size: int,
+    model_hidden_size: int = 4096,
+    batch_size: int = 4,
+) -> dict:
+    """
+    Simulate communication latency and throughput bottlenecks based on cluster topology.
+    
+    This kernel module proves the extensibility of the Agentic Kernel pattern.
+    If an agent splits a model across 8 GPUs using Tensor Parallelism over a slow
+    PCIe_Gen4 connection, the All-Reduce communication overhead will completely destroy
+    the FP8 compute speedup.
+    """
+    if topology_type not in BANDWIDTH_GBS:
+        topology_type = "PCIe_Gen4"
+        
+    bandwidth = BANDWIDTH_GBS[topology_type]
+    
+    # Simplified All-Reduce communication volume formula (Megatron-LM)
+    # Vol = 2 * (TP_size - 1) * batch_size * hidden_size * sequence_length * 2_bytes
+    # Here we abstract sequence length to calculate a relative penalty multiplier
+    comm_volume_relative = (tensor_parallel_size - 1) * model_hidden_size * batch_size
+    
+    # Calculate latency penalty (higher volume / lower bandwidth = worse penalty)
+    latency_penalty_factor = (comm_volume_relative / bandwidth) / 1000.0
+    
+    # Cap penalty at 0.9 (90% throughput loss)
+    latency_penalty_factor = min(0.9, latency_penalty_factor)
+    
+    if tensor_parallel_size <= 1:
+        bottleneck_risk = "NONE (Single GPU)"
+        effective_speed_pct = 100.0
+    elif bandwidth >= 300.0:
+        bottleneck_risk = "LOW (NVLink Active)"
+        effective_speed_pct = 100.0 - (latency_penalty_factor * 10)
+    elif bandwidth >= 64.0:
+        bottleneck_risk = "MODERATE (PCIe Gen5 bottleneck)"
+        effective_speed_pct = 100.0 - (latency_penalty_factor * 40)
+    else:
+        bottleneck_risk = "CRITICAL (PCIe Gen4 All-Reduce Starvation)"
+        effective_speed_pct = 100.0 - (latency_penalty_factor * 80)
+        
+    return {
+        "topology": topology_type,
+        "bandwidth_gb_s": bandwidth,
+        "comm_overhead_penalty": round(latency_penalty_factor, 4),
+        "effective_throughput_pct": round(max(10.0, effective_speed_pct), 1),
+        "bottleneck_risk": bottleneck_risk
+    }
