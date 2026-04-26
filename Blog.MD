@@ -49,3 +49,19 @@ Crucially, the **JSON Output Stability** graphs showed the model completely stop
 Libratio Fleet is built entirely on the OpenEnv specification, exposing the standard `reset()`, `step()`, and `state()` API. It is ready for production use and can be deployed directly to Hugging Face Spaces.
 
 By standardizing the Agentic Kernel pattern, we can push RL training loops to match raw GPU throughput—and eventually build agents that manage infrastructure as well as the best human engineers.
+
+---
+
+### A Personal Note: My Hackathon Learning Journey
+
+What makes this project special to me isn't just the physics engine or the benchmarks—it's how much I had to learn to build it. 
+
+When this hackathon started, my knowledge was foundational. I had to start by learning the absolute basics: **what are Neural Networks?** From there, I studied the **Transformer architecture** to understand how LLMs actually work under the hood. Then, I had to dive into **Reinforcement Learning (RL)**.
+
+The turning point was listening to the Hugging Face **Megalecture**. That lecture opened my eyes to the cutting-edge of LLM training. In a matter of days, I went from learning basic neural nets to implementing advanced RL concepts:
+- **GRPO (Group Relative Policy Optimization)** to train the models without a critic network.
+- **Reward Hacking & Inverse Reward Design (IRD)** to prevent the agents from gaming the physics engine.
+- **Breadcrumbing** to provide dense, step-by-step signals to guide the policy.
+- And ultimately, building the **Agentic Kernel** to bypass the massive latency bottleneck of traditional sandboxes.
+
+Training a model using GRPO on OpenEnv just a short time after learning what a neural network is was the hardest—and most rewarding—coding sprint I've ever done. Libratio Fleet is the direct result of that journey.

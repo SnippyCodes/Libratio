@@ -1,6 +1,6 @@
 # The Agentic Kernel Architecture
 
-> **TL;DR**: The Agentic Kernel evaluates RL trajectories at **7,600+ evals/sec** on a single CPU core by replacing Docker/MicroVM sandboxes with pure mathematical physics evaluation. Zero cold start. Zero GPU starvation.
+> **TL;DR**: The Agentic Kernel evaluates RL trajectories at **11,281 evals/sec** on a single CPU core by replacing Docker/MicroVM sandboxes with pure mathematical physics evaluation. Zero cold start. Zero GPU starvation.
 
 ---
 

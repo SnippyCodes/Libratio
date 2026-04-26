@@ -228,7 +228,7 @@ cfg = GRPOConfig(
     warmup_ratio=0.1,
     fp16=False,
     bf16=True,      # A10G is Ampere — BF16 is faster + better precision than FP16
-    report_to="none",
+    report_to="wandb", # Enabled experimental tracking per hackathon rules
 )
 
 trainer = GRPOTrainer(
