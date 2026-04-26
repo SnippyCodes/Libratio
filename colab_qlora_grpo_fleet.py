@@ -379,3 +379,8 @@ print("  !zip -r fleet_model.zip ./results")
 print("  files.download('fleet_model.zip')")
 print("  files.download('<path-from-artifact_paths.reward_curve_png>')")
 print("  files.download('<path-from-artifact_paths.loss_curve_png>')")
+
+!zip -r fleet_adapter.zip results/qlora_grpo_fleet/ results/training_logs.json
+
+from google.colab import files
+files.download('fleet_adapter.zip')

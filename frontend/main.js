@@ -132,8 +132,12 @@ breakAgentBtn.addEventListener("click", () => {
 // ════════════════════════════════════════
 
 function renderTelemetry(obs) {
-  if (!obs || stepCount === 0) {
+  if (!obs) {
     structuredObs.innerHTML = '<div class="telemetry-empty">No active telemetry. Reset episode to begin.</div>';
+    return;
+  }
+  if (stepCount === 0) {
+    structuredObs.innerHTML = '<div class="telemetry-empty">Cluster initialized. Click "Step Environment" to begin monitoring.</div>';
     return;
   }
 
@@ -314,6 +318,7 @@ function renderGPUs(obs, targetGrid, isRandomBaseline = false) {
     if (a) {
       if (a.mem > 0) memUsed = a.mem;
       else if (isRandomBaseline && a.crashed) memUsed = 79.9;
+      else if (stepCount === 0) memUsed = 2 + Math.random() * 3; 
       else memUsed = 45 + Math.random() * 25; 
     }
     
@@ -328,7 +333,7 @@ function renderGPUs(obs, targetGrid, isRandomBaseline = false) {
     let temp, tempCls;
     if (isCrashed) { temp = 94 + Math.floor(Math.random() * 6); tempCls = "hot"; }
     else if (pct >= 99) { temp = 88 + Math.floor(Math.random() * 4); tempCls = "hot"; }
-    else if (isActive) { temp = 45 + Math.floor(pct * 0.35) + Math.floor(Math.random() * 5); tempCls = temp > 72 ? "warm" : "cool"; }
+    else if (isActive && stepCount > 0) { temp = 45 + Math.floor(pct * 0.35) + Math.floor(Math.random() * 5); tempCls = temp > 72 ? "warm" : "cool"; }
     else { temp = 28 + Math.floor(Math.random() * 5); tempCls = "cool"; }
 
     let coresHtml = '<div class="core-grid">';

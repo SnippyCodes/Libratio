@@ -24,9 +24,8 @@ Built on the **Agentic Kernel**: a pure-math physics engine that replaces Docker
 | Link | URL |
 |------|-----|
 | Environment (HF Space) | [huggingface.co/spaces/SnippyCodes/Libratio](https://huggingface.co/spaces/SnippyCodes/Libratio) |
-| Training Notebook | [Google Colab](https://colab.research.google.com/drive/1H5TrFlASqrfTsLxD2iM1CdW79iW_Ksh8?usp=sharing) |
-| Blog / Pitch | **[INSERT YOUTUBE OR HF BLOG LINK HERE]** |
-| Training Script | [`colab_qlora_grpo_fleet.py`](colab_qlora_grpo_fleet.py) (TRL + Unsloth) |
+| Training Code | [Live Colab Notebook](https://colab.research.google.com/drive/1H5TrFlASqrfTsLxD2iM1CdW79iW_Ksh8?usp=sharing) |
+| Blog / Pitch | [Hugging Face Blog Post](https://huggingface.co/spaces/SnippyCodes/Libratio/blob/main/Blog.MD) |
 | Architecture Deep-Dive | [KERNEL.md](KERNEL.md) |
 
 ---
@@ -80,6 +79,25 @@ The reward signal is **rich and informative**: per-layer breadcrumb feedback, di
 - Starving any model with 0 GPUs
 - Flagging instability without evidence on the first monitoring window
 
+### Quick UI Walkthrough
+
+When you open the [live environment](https://huggingface.co/spaces/SnippyCodes/Libratio), here is what each element does:
+
+| UI Element | What It Does |
+|---|---|
+| **Scenario Control** (dropdown) | Select one of the 4 tasks: Precision, Oversight, Resource, or Recovery |
+| **Reset Episode** | Initializes a fresh cluster scenario. GPUs start cool (~29°C) and idle |
+| **Step Environment** | Sends the JSON action to the Agentic Kernel and returns reward + new state |
+| **Action JSON** (editor) | The agent's action. Edit this to test different strategies manually |
+| **GPU Rack** (center) | Live visualization: each chip shows temperature, VRAM bar, core activity, and model assignment |
+| **Cluster Metrics** (left) | Real-time GPU count, total/used/free VRAM, utilization percentage |
+| **Telemetry Dashboard** (right) | Per-model health status, loss sparklines, and thermal/memory alerts |
+| **Agent Reasoning Feed** | Shows the agent's reasoning text from each action |
+| **Live Reward Timeline** | Chart tracking reward scores across steps |
+| **Break the Agent (top-right)** | Splits the view: trained agent (left) vs random baseline (right) side-by-side |
+
+**Try it yourself:** Reset → Step → watch the GPUs heat up → click "Break the Agent" to see how a random baseline crashes the cluster while the trained agent keeps it stable.
+
 ---
 
 ## 3. Training Results
@@ -99,6 +117,9 @@ The reward signal is **rich and informative**: per-layer breadcrumb feedback, di
 *Completion length converges to ~254 tokens — the model learned to output clean, deterministic JSON instead of hallucinating verbose reasoning.*
 
 ### Before vs After
+
+![Baseline vs Trained](images/baseline_vs_trained.PNG)
+*4.3x reward improvement: random baseline (0.21) vs GRPO-trained agent (0.90) after 400 steps.*
 
 | Agent | Avg Reward | Behavior |
 |---|---|---|
@@ -126,6 +147,9 @@ uvicorn server.app:app --host 0.0.0.0 --port 7860
 
 # Run the kernel benchmark (reproduces the 11,281 evals/sec claim)
 python kernel_benchmark.py
+
+# Generate the training graphs (reproduces the PNGs in the README)
+python generate_training_graphs.py
 
 # Run multi-agent inference (requires HF_TOKEN or Groq API key)
 export HF_TOKEN="your_token"
