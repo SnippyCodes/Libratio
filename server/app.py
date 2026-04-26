@@ -11,7 +11,6 @@ from typing import List
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from environment.mixed_precision_env import MixedPrecisionEnvironment
 from environment.fleet_env import FleetEnvironment
 from server.models import (
     ResetRequest, ResetResponse, StepResponse, StateResponse,
@@ -35,8 +34,6 @@ if COLAB_GRAPHS_DIR.exists():
 if HF_GRAPHS_DIR.exists():
     app.mount("/hf_graphs", StaticFiles(directory=str(HF_GRAPHS_DIR)), name="hf_graphs")
 
-# Single-agent environment (backward compatible)
-solo_env = MixedPrecisionEnvironment()
 
 # Multi-agent fleet environment (new)
 fleet_env = FleetEnvironment()
@@ -60,7 +57,6 @@ def root():
         "environment": "Libratio Fleet — Multi-Agent GPU Fleet Management",
         "version": "3.0.0",
         "modes": {
-            "solo": "Original single-agent precision environment (/reset, /step, /state, /tasks)",
             "fleet": "Multi-agent fleet environment (/fleet/reset, /fleet/step, /fleet/state, /fleet/tasks)",
         },
     }
@@ -75,42 +71,6 @@ def health():
     }
 
 
-# ═══════════════════════════════════════════════════════════
-# SOLO MODE — Original single-agent endpoints (backward compatible)
-# ═══════════════════════════════════════════════════════════
-
-@app.get("/tasks", response_model=List[TaskDefinition])
-def get_tasks() -> List[TaskDefinition]:
-    return [TaskDefinition(**t) for t in solo_env.TASK_DEFS]
-
-
-@app.post("/reset", response_model=ResetResponse)
-def reset_environment(payload: dict = {}):
-    task_id = payload.get("task_id", "precision_assignment")
-    obs = solo_env.reset(task_id)
-    return ResetResponse(observation=obs)
-
-
-@app.post("/step", response_model=StepResponse)
-def step_environment(payload: dict = {}):
-    action = payload.get("action", payload)
-    result = solo_env.step(action)
-    clamped_score = _clamp_score(result["reward"]["score"])
-    return StepResponse(
-        observation=result["observation"],
-        reward=RewardPayload(
-            score=clamped_score,
-            feedback=result["reward"]["feedback"],
-        ),
-        done=result["done"],
-        info=result.get("info", {}),
-    )
-
-
-@app.post("/state", response_model=StateResponse)
-def get_state():
-    s = solo_env.state()
-    return StateResponse(**s)
 
 
 # ═══════════════════════════════════════════════════════════
