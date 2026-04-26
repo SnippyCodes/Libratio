@@ -246,19 +246,82 @@ print("=" * 60 + "\n")
 
 trainer.train()
 
-# ── Step 7.5: Persist logs + auto-generate plots ───────────
-from training_logging import save_trl_training_artifacts
+# ── Step 7.5: Auto-generate plots from log history ──────────
+import matplotlib.pyplot as plt
+import json
+import os
+from datetime import datetime
 
-run_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-artifact_paths = save_trl_training_artifacts(
-    log_history=trainer.state.log_history,
-    output_dir="./results/training_logs",
-    run_name=f"grpo_fleet_{run_id}",
-)
-print("\nSaved training artifacts:")
-for key, value in artifact_paths.items():
-    if value:
-        print(f"  - {key}: {value}")
+os.makedirs("./results", exist_ok=True)
+history = trainer.state.log_history
+
+steps = []
+rewards = []
+losses = []
+
+for log in history:
+    if "step" in log:
+        s = log["step"]
+        if "reward" in log:
+            steps.append(s)
+            rewards.append(log["reward"])
+        if "loss" in log:
+            # Match step for loss
+            if s not in steps:
+                steps.append(s)
+            # Find the index of this step
+            idx = steps.index(s)
+            # Extend lists if necessary
+            while len(losses) <= idx:
+                losses.append(None)
+            losses[idx] = log["loss"]
+
+# Clean up lists to be same length for plotting
+plot_steps = []
+plot_rewards = []
+plot_losses = []
+for i in range(len(steps)):
+    if i < len(rewards) and i < len(losses) and rewards[i] is not None and losses[i] is not None:
+        plot_steps.append(steps[i])
+        plot_rewards.append(rewards[i])
+        plot_losses.append(losses[i])
+
+if plot_steps:
+    # 1. Plot Reward Curve
+    plt.figure(figsize=(10, 5))
+    plt.plot(plot_steps, plot_rewards, label="Mean Reward", color="#00e676", linewidth=2)
+    plt.axhline(y=0.90, color="r", linestyle="--", label="Target (>0.90)")
+    plt.title("Libratio Fleet: GRPO Reward Curve (500 steps)")
+    plt.xlabel("Training Steps")
+    plt.ylabel("Reward Score")
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    reward_path = "./results/reward_curve_final.png"
+    plt.savefig(reward_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+    # 2. Plot Loss Curve
+    plt.figure(figsize=(10, 5))
+    plt.plot(plot_steps, plot_losses, label="Training Loss", color="#ff1744", linewidth=2)
+    plt.title("Libratio Fleet: GRPO Loss Curve (500 steps)")
+    plt.xlabel("Training Steps")
+    plt.ylabel("Loss")
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    loss_path = "./results/loss_curve_final.png"
+    plt.savefig(loss_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+    # 3. Save raw JSON data
+    with open("./results/training_logs.json", "w") as f:
+        json.dump(history, f, indent=2)
+
+    print(f"\nSaved training artifacts:")
+    print(f"  - Reward Curve: {reward_path}")
+    print(f"  - Loss Curve: {loss_path}")
+    print(f"  - Raw Logs: ./results/training_logs.json")
+else:
+    print("\n[WARNING] Not enough logging data to generate plots. Check 'logging_steps' in GRPOConfig.")
 
 # ── Step 8: Save results ───────────────────────────────────
 trainer.save_model(OUT_DIR)
