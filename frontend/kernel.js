@@ -18,14 +18,14 @@ function toggleKernelPanel() {
     panel.style.display = "block";
     badge.classList.add("active");
     // Auto-resize the dashboard below
-    document.querySelector(".dashboard").style.height = "calc(100vh - 44px - " + panel.offsetHeight + "px)";
+    document.querySelector(".dashboard").style.height = "calc(100vh - 48px - " + panel.offsetHeight + "px)";
     
     // Auto-run profile on first open
     runKernelProfile();
   } else {
     panel.style.display = "none";
     badge.classList.remove("active");
-    document.querySelector(".dashboard").style.height = "calc(100vh - 44px)";
+    document.querySelector(".dashboard").style.height = "calc(100vh - 48px)";
   }
 }
 

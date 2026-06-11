@@ -138,33 +138,115 @@ The Agentic Kernel architecture also solves a fundamental problem for RL-based L
 
 ---
 
-## 5. Setup & Reproduction
+---
+
+## 5. MongoDB Intelligent Core
+
+Instead of treating MongoDB as a basic JSON dump, Libratio Fleet integrates MongoDB Atlas as its intelligent MLOps backend using advanced native features:
+
+```
+                                 ┌────────────────────────────────────┐
+                                 │       Agentic RL Environment       │
+                                 └─────────────────┬──────────────────┘
+                                                   │ Step Telemetry &
+                                                   │ Run Metrics
+                                                   ▼
+┌──────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                            MongoDB Atlas                                             │
+│                                                                                                      │
+│  ┌───────────────────────────────┐   ┌───────────────────────────────┐   ┌────────────────────────┐  │
+│  │     trajectories (flat)       │   │ gpu_telemetry_metrics (Time)  │   │      runs (telemetry)  │  │
+│  │ - Gemini 768d Embeddings     │   │ - Auto-compressed Metrics     │   │ - Average scores/runs  │  │
+│  │ - $vectorSearch Index        │   │ - Sorted by step/timestamp    │   │ - Change Stream target │  │
+│  └───────────────▲───────────────┘   └───────────────▲───────────────┘   └───────────┬────────────┘  │
+│                  │                                   │                               │               │
+└──────────────────┼───────────────────────────────────┼───────────────────────────────┼───────────────┘
+                   │                                   │                               │
+                   │ Semantic RAG                      │ Fetch Profile                 │ Trigger event
+                   │                                   │                               │
+         ┌─────────┴─────────┐               ┌─────────┴─────────┐                     │
+         │  Predictive Agent │               │ mongodb_streams.py│◄────────────────────┘
+         │ (Gemini RAG SRE)  │               │  (Change Stream)  │
+         └───────────────────┘               └─────────┬─────────┘
+                                                       │ Log Incident
+                                                       ▼
+                                             ┌───────────────────┐
+                                             │ incident_reports  │
+                                             └───────────────────┘
+```
+
+### 🧠 1. Atlas Vector Search (Semantic RAG)
+- **Data Serialization**: Trajectory data (model, layer precisions, memory, thermals, outcomes) is serialized into semantic natural language.
+- **Gemini Embeddings**: Serialized text is embedded into a 768-dim space via Google's `models/gemini-embedding-001`.
+- **Cosine Similarity Match**: At query time, the live cluster state is embedded and searched via MongoDB Atlas `$vectorSearch` (`trajectory_vector_index`) against past crash documents.
+- **RAG Recovery**: Rather than simple exact filters (e.g. `memory > 200`), Vector Search finds records that *feel* semantically similar, enabling the agent to learn from fuzzy historic contexts.
+
+### ⏱️ 2. Native Time Series Metrics Logging
+- **Optimized Storage**: Step-by-step telemetry (VRAM, thermal status, power, reward) is saved to a native MongoDB Time Series collection (`gpu_telemetry_metrics`).
+- **Granular Grouping**: Documents are partition-organized by `timeField: "timestamp"` and `metaField: "metadata"`. MongoDB automatically compresses the data (saving up to 95% disk space) and indexes it for rapid historical querying.
+
+### ⚡ 3. Real-Time MLOps Change Streams
+- **Event-Driven Diagnostics**: A background daemon (`mongodb_streams.py`) listens to a MongoDB `$changeStream` on the `runs` collection.
+- **Auto-Triaging**: If a run completes with a poor score (<0.60), the listener catches the insertion event, queries the Time Series collection to build a step-by-step performance profile of that execution, runs a heuristic diagnostic, and posts a detailed post-incident report to the `incident_reports` collection.
+
+### 📊 4. Aggregation Analytics Dashboard
+- Exposes an `/api/analytics` endpoint on the FastAPI server.
+- Uses complex multi-stage `$group`, `$sort`, and conditional `$cond` aggregation pipelines to calculate running average scores per task, success percentages, and cross-model performance benchmarks directly inside the database.
+
+---
+
+## 6. Setup & Reproduction
 
 ```bash
-# Run the environment server
+# 1. Install dependencies (includes Google ADK + MongoDB MCP support)
 pip install -r requirements.txt
+
+# 2. Copy and fill in your secrets
+cp .env.example .env
+# Edit .env: set MONGO_URI, GEMINI_API_KEY, HF_TOKEN, GROQ_API_KEY
+
+# 3. Run the environment server
 uvicorn server.app:app --host 0.0.0.0 --port 7860
 
-# Run the kernel benchmark (reproduces the 11,281 evals/sec claim)
+# 4. Run the kernel benchmark (reproduces the 11,281 evals/sec claim)
 python kernel_benchmark.py
 
-# Generate the training graphs (reproduces the PNGs in the README)
+# 5. Generate the training graphs (reproduces the PNGs in the README)
 python generate_training_graphs.py
 
-# Run multi-agent inference (requires HF_TOKEN or Groq API key)
+# 6. Run multi-agent inference (requires HF_TOKEN or Groq API key)
 export HF_TOKEN="your_token"
 python fleet_inference.py
+```
+
+### Google ADK Agent (MongoDB MCP Integration)
+
+```bash
+# Run the Google ADK agent directly (uses Gemini + MongoDB MCP Server)
+# Requires: GEMINI_API_KEY + MONGO_URI in .env, and npx available
+python agent/adk_agent.py
+
+# Or trigger via the API while the server is running:
+curl -X POST http://localhost:7860/adk/run \
+  -H "Content-Type: application/json" \
+  -d '{"task_id": "fleet_precision"}'
+
+# Check ADK + MongoDB MCP status:
+curl http://localhost:7860/adk/status
 ```
 
 ### Architecture
 
 **OpenEnv** (standard interface) → **TRL GRPOTrainer** (optimization) → **Unsloth** (4-bit QLoRA acceleration) → **Agentic Kernel** (deterministic physics rewards)
 
-> Full roadmap: multi-GPU topology modeling, live DCGM telemetry, curriculum learning, kernel-as-a-service. See [KERNEL.md](KERNEL.md).
+**ADK Layer**: Gemini 2.0 Flash → Google ADK MCPToolset → MongoDB MCP Server → MongoDB Atlas
 
 ---
 
-## 6. RL Debugging Methodology
+> See **Section 5** above for the full MongoDB Atlas Intelligent Core architecture.
+
+
+## 7. RL Debugging Methodology
 
 Following the official OpenEnv best practices, this environment was developed using strict isolation to prevent conflating environment bugs with optimizer failures:
 
@@ -174,3 +256,71 @@ Following the official OpenEnv best practices, this environment was developed us
 4. **Frozen Model Testing:** Sent zero-shot prompts to the base model (`fleet_inference.py`) to verify it understood the JSON format.
 5. **Tiny RL Experiment:** Ran a 10-step GRPO test to ensure loss updating.
 6. **Scaled Training:** Executed the final 400-step training run.
+
+---
+
+## 8. Using Your Custom Trained Model
+
+The project ships with a GRPO-fine-tuned **LLaMA-3.1-8B** adapter published at [`SnippyCodes/libratio-fleet-llama3-grpo`](https://huggingface.co/SnippyCodes/libratio-fleet-llama3-grpo) and served via [Featherless AI](https://featherless.ai). You can swap in your own retrained adapter in three ways:
+
+### Option A — HuggingFace (default, cloud)
+
+The agent automatically routes `fleet_precision` and `fleet_recovery` tasks to your custom model. Set these in `.env`:
+
+```bash
+HF_TOKEN=your_hf_token
+HF_MODEL_URL=https://router.huggingface.co/v1/chat/completions
+HF_MODEL_NAME=YOUR_HF_USERNAME/your-model-name:featherless-ai
+```
+
+### Option B — Local vLLM Server (fastest, GPU required)
+
+After training your adapter with `colab_qlora_grpo_fleet.py`:
+
+```bash
+# Serve the merged model locally
+pip install vllm
+vllm serve results/qlora_grpo_fleet_merged_16bit \
+  --host 0.0.0.0 --port 8000 \
+  --served-model-name libratio-fleet-local
+```
+
+Then update `.env`:
+
+```bash
+API_BASE_URL=http://localhost:8000/v1
+MODEL_NAME=libratio-fleet-local
+HF_TOKEN=not-needed
+HF_MODEL_URL=http://localhost:8000/v1/chat/completions
+HF_MODEL_NAME=libratio-fleet-local
+```
+
+### Option C — Route ALL Tasks to Your Custom Model
+
+By default, `fleet_oversight` and `fleet_resource` use Groq (larger model). To route everything to your model, edit `fleet_inference.py` line ~152:
+
+```python
+# Change this:
+if task_id in ["fleet_oversight", "fleet_resource"] or "groq.com" in current_base_url:
+# To this (disable Groq routing):
+if False:
+```
+
+### Retraining from Scratch
+
+```bash
+# In Google Colab (free T4 GPU):
+# 1. Open colab_qlora_grpo_fleet.py
+# 2. Update REPO_URL to your fork
+# 3. Run — training takes ~2-3 hours on T4
+# 4. Adapter is saved to results/qlora_grpo_fleet/
+
+# Push your new adapter to HuggingFace Hub:
+from huggingface_hub import HfApi
+api = HfApi()
+api.upload_folder(
+    folder_path="results/qlora_grpo_fleet",
+    repo_id="YOUR_USERNAME/libratio-fleet-v2",
+    repo_type="model"
+)
+```

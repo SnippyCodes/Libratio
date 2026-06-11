@@ -4,12 +4,29 @@ Includes API endpoints and a lightweight frontend for demos.
 """
 from pathlib import Path
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from typing import List
-
 import sys, os
+from pymongo import MongoClient
+import certifi
+from dotenv import load_dotenv
+
+load_dotenv()
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# ── ADK Agent (Google Cloud Agent Builder integration) ──
+try:
+    from agent.adk_agent import run_fleet_task_with_adk, ADK_AVAILABLE
+except ImportError:
+    ADK_AVAILABLE = False
+    async def run_fleet_task_with_adk(task_id: str = "fleet_precision"):
+        return {"error": "google-adk not installed", "adk_available": False}
+
+MONGO_URI = os.getenv("MONGO_URI")
+DB_NAME = "libratio"
 
 from environment.fleet_env import FleetEnvironment
 from server.models import (
@@ -21,6 +38,15 @@ app = FastAPI(
     title="Libratio Fleet — Multi-Agent GPU Fleet Management",
     description="OpenEnv for multi-agent GPU cluster precision optimization and fleet oversight",
     version="3.0.0"
+)
+
+# Allow browser frontends on any origin to call the API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -109,6 +135,229 @@ def step_fleet(payload: dict = {}):
 def get_fleet_state():
     s = fleet_env.state()
     return StateResponse(**s)
+
+
+@app.get("/api/analytics")
+def get_fleet_analytics():
+    """
+    Exposes real-time fleet analytics aggregated via MongoDB aggregation pipelines.
+    Provides performance stats per task and compares avg scores per model.
+    """
+    if not MONGO_URI:
+        return {"database_status": "not_configured", "error": "MONGO_URI not set in env"}
+
+    client_mongo = None
+    try:
+        client_mongo = MongoClient(MONGO_URI, tlsCAFile=certifi.where(), serverSelectionTimeoutMS=30000)
+        db_mongo = client_mongo[DB_NAME]
+        runs_col = db_mongo["runs"]
+
+        # ── Pipeline 1: Task summary statistics ──
+        pipeline_tasks = [
+            {
+                "$group": {
+                    "_id": "$task_id",
+                    "avg_score": {"$avg": "$score"},
+                    "max_score": {"$max": "$score"},
+                    "min_score": {"$min": "$score"},
+                    "success_rate": {
+                        "$avg": {
+                            "$cond": [{"$eq": ["$success", True]}, 1.0, 0.0]
+                        }
+                    },
+                    "total_runs": {"$sum": 1}
+                }
+            },
+            {"$sort": {"avg_score": -1}}
+        ]
+        task_stats = list(runs_col.aggregate(pipeline_tasks))
+
+        # ── Pipeline 2: Model performance comparisons ──
+        pipeline_models = [
+            {
+                "$group": {
+                    "_id": "$model_name",
+                    "avg_score": {"$avg": "$score"},
+                    "total_runs": {"$sum": 1}
+                }
+            },
+            {"$sort": {"avg_score": -1}}
+        ]
+        model_stats = list(runs_col.aggregate(pipeline_models))
+
+        # Format aggregation outputs into user-friendly stats
+        formatted_tasks = []
+        for t in task_stats:
+            formatted_tasks.append({
+                "task_id": t["_id"],
+                "avg_score": round(t["avg_score"], 3),
+                "max_score": round(t["max_score"], 3),
+                "min_score": round(t["min_score"], 3),
+                "success_rate_pct": round(t["success_rate"] * 100, 1),
+                "total_runs": t["total_runs"]
+            })
+
+        formatted_models = []
+        for m in model_stats:
+            formatted_models.append({
+                "model_name": m["_id"],
+                "avg_score": round(m["avg_score"], 3),
+                "total_runs": m["total_runs"]
+            })
+
+        return {
+            "database_status": "connected",
+            "total_runs_logged": sum(t["total_runs"] for t in task_stats),
+            "task_analytics": formatted_tasks,
+            "model_analytics": formatted_models
+        }
+    except Exception as e:
+        return {
+            "database_status": "failed_connection",
+            "error": str(e)
+        }
+    finally:
+        if client_mongo:
+            client_mongo.close()
+
+
+@app.get("/api/search")
+def search_trajectories(query: str, type: str = "hybrid", limit: int = 5):
+    """
+    Search historical trajectories using MongoDB Atlas Search.
+    Supports 'text' (full-text search), 'vector' (semantic vector search),
+    or 'hybrid' (combined RRF fusion).
+    """
+    if not MONGO_URI:
+        return {"error": "MONGO_URI not set in env"}
+        
+    client_mongo = None
+    try:
+        client_mongo = MongoClient(MONGO_URI, tlsCAFile=certifi.where(), serverSelectionTimeoutMS=30000)
+        db_mongo = client_mongo[DB_NAME]
+        collection = db_mongo["trajectories"]
+        
+        if type == "text":
+            from mongodb_vector import text_search_similar_trajectories
+            results = text_search_similar_trajectories(collection, query, top_k=limit)
+        elif type == "vector":
+            from mongodb_vector import generate_embedding
+            query_vector = generate_embedding(query, task_type="RETRIEVAL_QUERY")
+            pipeline = [
+                {
+                    "$vectorSearch": {
+                        "index": "trajectory_vector_index",
+                        "path": "embedding",
+                        "queryVector": query_vector,
+                        "numCandidates": limit * 10,
+                        "limit": limit,
+                    }
+                },
+                {
+                    "$addFields": {
+                        "vector_score": {"$meta": "vectorSearchScore"}
+                    }
+                },
+                {
+                    "$project": {
+                        "embedding": 0
+                    }
+                }
+            ]
+            results = list(collection.aggregate(pipeline))
+            for res in results:
+                res["_id"] = str(res["_id"])
+        else: # hybrid
+            from mongodb_vector import generate_embedding
+            query_vector = generate_embedding(query, task_type="RETRIEVAL_QUERY")
+            
+            # Vector Search Pipeline
+            vector_pipeline = [
+                {
+                    "$vectorSearch": {
+                        "index": "trajectory_vector_index",
+                        "path": "embedding",
+                        "queryVector": query_vector,
+                        "numCandidates": limit * 10,
+                        "limit": limit * 2,
+                    }
+                },
+                {
+                    "$addFields": {
+                        "vector_score": {"$meta": "vectorSearchScore"}
+                    }
+                },
+                {
+                    "$project": {
+                        "embedding": 0
+                    }
+                }
+            ]
+            
+            # Text Search Pipeline
+            text_pipeline = [
+                {
+                    "$search": {
+                        "index": "trajectory_text_search_index",
+                        "text": {
+                            "query": query,
+                            "path": ["embedding_source_text", "failure_reason", "model_name", "outcome"]
+                        }
+                    }
+                },
+                {
+                    "$addFields": {
+                        "search_score": {"$meta": "searchScore"}
+                    }
+                },
+                {
+                    "$limit": limit * 2
+                },
+                {
+                    "$project": {
+                        "embedding": 0
+                    }
+                }
+            ]
+            
+            vector_results = list(collection.aggregate(vector_pipeline))
+            text_results = list(collection.aggregate(text_pipeline))
+            
+            # RRF merge
+            K = 60
+            rrf_scores = {}
+            doc_map = {}
+            
+            for rank, doc in enumerate(vector_results):
+                doc_id = str(doc["_id"])
+                doc_map[doc_id] = doc
+                rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + (1.0 / (K + rank + 1))
+                doc["vector_rank"] = rank + 1
+                
+            for rank, doc in enumerate(text_results):
+                doc_id = str(doc["_id"])
+                if doc_id not in doc_map:
+                    doc_map[doc_id] = doc
+                else:
+                    if "search_score" in doc:
+                        doc_map[doc_id]["search_score"] = doc["search_score"]
+                rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + (1.0 / (K + rank + 1))
+                doc_map[doc_id]["text_rank"] = rank + 1
+                
+            sorted_ids = sorted(rrf_scores.keys(), key=lambda x: rrf_scores[x], reverse=True)
+            results = []
+            for doc_id in sorted_ids[:limit]:
+                doc = doc_map[doc_id]
+                doc["rrf_score"] = rrf_scores[doc_id]
+                doc["_id"] = doc_id
+                results.append(doc)
+                
+        return {"status": "success", "query": query, "type": type, "count": len(results), "results": results}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+    finally:
+        if client_mongo:
+            client_mongo.close()
 
 
 # ═══════════════════════════════════════════════════════════
@@ -323,6 +572,71 @@ def kernel_profile():
 def main():
     import uvicorn
     uvicorn.run("server.app:app", host="0.0.0.0", port=7860)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# GOOGLE ADK AGENT ENDPOINTS
+# Demonstrates Google Cloud Agent Builder + MongoDB MCP integration
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.get("/adk/status")
+def adk_status():
+    """
+    Check whether the Google ADK agent and MongoDB MCP server are available.
+    """
+    return {
+        "adk_available": ADK_AVAILABLE,
+        "mongodb_mcp": "enabled" if ADK_AVAILABLE else "requires google-adk and mcp packages",
+        "agent_model": os.getenv("ADK_MODEL", "gemini-2.0-flash"),
+        "install_command": "pip install google-adk mcp" if not ADK_AVAILABLE else None,
+        "description": "Google Cloud Agent Builder (ADK) + MongoDB MCP Server integration",
+    }
+
+
+@app.post("/adk/run")
+async def run_adk_agent(payload: dict = {}):
+    """
+    Run the Libratio Fleet Agent using Google ADK + MongoDB MCP Server.
+
+    This is the core hackathon demo endpoint:
+    - Uses Google ADK (Agent Development Kit) as the orchestration framework
+    - Gemini 2.0 Flash as the reasoning model
+    - MongoDB MCP Server as the partner superpower (tool calls via Model Context Protocol)
+    - Fleet physics tools for environment interaction
+
+    Body: {"task_id": "fleet_precision"}
+    Valid task_ids: fleet_precision, fleet_oversight, fleet_resource, fleet_recovery
+    """
+    if not ADK_AVAILABLE:
+        return {
+            "error": "Google ADK not installed",
+            "fix": "pip install google-adk mcp",
+            "adk_available": False,
+        }
+
+    task_id = payload.get("task_id", "fleet_precision")
+    valid_tasks = ["fleet_precision", "fleet_oversight", "fleet_resource", "fleet_recovery"]
+
+    if task_id not in valid_tasks:
+        return {"error": f"Invalid task_id. Choose from: {valid_tasks}"}
+
+    try:
+        import asyncio
+        result = await run_fleet_task_with_adk(task_id)
+        return {
+            "status": "completed",
+            "agent": "LibratioFleetCommander",
+            "framework": "Google ADK (Agent Development Kit)",
+            "partner_integration": "MongoDB MCP Server (@mongodb-js/mongodb-mcp-server)",
+            **result,
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "task_id": task_id,
+        }
+
 
 if __name__ == "__main__":
     main()

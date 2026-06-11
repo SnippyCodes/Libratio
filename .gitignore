@@ -49,3 +49,6 @@ DETAILED_PROJECT_CONTEXT.md
 benchmark_results.json
 benchmark.py
 generate_chart.py
+
+# --- Scratch directory ---
+scratch/

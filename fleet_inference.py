@@ -11,9 +11,15 @@ Usage:
     python fleet_inference.py
 """
 import os
+import re
 import json
 import httpx
+from datetime import datetime, timezone
 from openai import OpenAI
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Config
 API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
@@ -130,7 +136,7 @@ RESPOND WITH: {"reasoning": "detailed explanation of why recovery will be stable
 }
 
 
-def call_llm(system_prompt: str, observation: dict, conversation_history: list = None) -> dict:
+def call_llm(system_prompt: str, observation: dict, conversation_history: list = None, task_id: str = None) -> dict:
     """Call the LLM with the observation and return parsed JSON action."""
     messages = [{"role": "system", "content": system_prompt}]
 
@@ -140,20 +146,55 @@ def call_llm(system_prompt: str, observation: dict, conversation_history: list =
     user_msg = f"Current environment state:\n{json.dumps(observation, indent=2, default=str)}\n\nProvide your action as JSON."
     messages.append({"role": "user", "content": user_msg})
 
+    # Dynamic routing: use custom model for precision/recovery, Groq for oversight/resource
+    current_model = MODEL_NAME
+    current_base_url = API_BASE_URL
+    current_api_key = os.getenv("HF_TOKEN")
+
+    if task_id in ["fleet_oversight", "fleet_resource"] or "groq.com" in current_base_url:
+        current_model = "llama-3.3-70b-versatile"
+        current_base_url = "https://api.groq.com/openai/v1"
+        current_api_key = os.getenv("GROQ_API_KEY")
+
+    if not current_api_key:
+        raise ValueError(f"Required API key not found in environment for {current_base_url}")
+
+    local_client = OpenAI(api_key=current_api_key, base_url=current_base_url)
+
     try:
-        response = client.chat.completions.create(
-            model=MODEL_NAME,
+        response = local_client.chat.completions.create(
+            model=current_model,
             messages=messages,
             temperature=0.2,
             max_tokens=600,
         )
         content = response.choices[0].message.content.strip()
 
-        # Extract JSON from markdown code blocks if present
-        if "```json" in content:
-            content = content.split("```json")[1].split("```")[0].strip()
-        elif "```" in content:
-            content = content.split("```")[1].split("```")[0].strip()
+        # Extract the first matching JSON object by brace counting
+        first_brace = content.find('{')
+        if first_brace != -1:
+            count = 0
+            in_string = False
+            escape = False
+            for i in range(first_brace, len(content)):
+                char = content[i]
+                if char == '"' and not escape:
+                    in_string = not in_string
+                elif char == '\\' and in_string:
+                    escape = not escape
+                    continue
+                elif not in_string:
+                    if char == '{':
+                        count += 1
+                    elif char == '}':
+                        count -= 1
+                        if count == 0:
+                            content = content[first_brace:i+1]
+                            break
+                escape = False
+
+        # Strip trailing commas inside objects or arrays (common LLM generation issue)
+        content = re.sub(r",\s*([\]}])", r"\1", content)
 
         return json.loads(content)
     except Exception as e:
@@ -185,7 +226,7 @@ def run_fleet_task(task_id: str):
         steps += 1
 
         # Call LLM
-        action = call_llm(system_prompt, obs, conversation_history)
+        action = call_llm(system_prompt, obs, conversation_history, task_id)
 
         error = None
         done = False
@@ -217,6 +258,32 @@ def run_fleet_task(task_id: str):
             done = data["done"]
             obs = data.get("observation", None)
 
+            # Log step-by-step metrics to MongoDB Time Series collection
+            try:
+                from mongodb_metrics import log_step_metrics
+                cluster_info = obs.get("cluster", {}) if obs else {}
+                model_info = obs.get("your_model", {}) if obs else {}
+                mem_used = cluster_info.get("memory_used_gb")
+                if mem_used is None:
+                    mem_used = model_info.get("memory_used_gb", 0.0)
+                therm = cluster_info.get("thermal_risk")
+                if therm is None:
+                    therm = model_info.get("thermal_risk", "UNKNOWN")
+                pwr = cluster_info.get("power_util", cluster_info.get("estimated_power_pct", 0.0))
+                m_id = model_info.get("model_id", MODEL_NAME)
+                
+                log_step_metrics(
+                    task_id=task_id,
+                    model_id=m_id,
+                    step=steps,
+                    reward=reward,
+                    memory_used_gb=mem_used,
+                    thermal_risk=therm,
+                    power_util=pwr
+                )
+            except Exception:
+                pass
+
             # Add feedback to conversation history
             conversation_history.append({
                 "role": "user",
@@ -242,11 +309,41 @@ def run_fleet_task(task_id: str):
 
     print(f"[FLEET END] task={task_id} score={score:.3f} steps={steps} success={success}", flush=True)
     print(f"            rewards=[{rewards_str}]", flush=True)
+
+    # Log run telemetry to MongoDB runs collection
+    mongo_uri = os.getenv("MONGO_URI")
+    if mongo_uri:
+        try:
+            from pymongo import MongoClient
+            from datetime import datetime
+            client_mongo = MongoClient(mongo_uri, serverSelectionTimeoutMS=2000)
+            db_mongo = client_mongo["libratio"]
+            runs_col = db_mongo["runs"]
+            runs_col.insert_one({
+                "task_id": task_id,
+                "model_name": MODEL_NAME,
+                "score": score,
+                "steps": steps,
+                "success": success,
+                "rewards": rewards_list,
+                "timestamp": datetime.now(timezone.utc)
+            })
+            print("[OK] Logged run telemetry to MongoDB Atlas ('runs' collection)")
+        except Exception as e:
+            print(f"[WARN] Could not log telemetry to MongoDB: {e}")
+
     return score, steps
 
 
 def main():
     """Run all fleet tasks or a specific one."""
+    # Initialize MongoDB Time Series metrics collection
+    try:
+        from mongodb_metrics import create_metrics_timeseries_collection
+        create_metrics_timeseries_collection()
+    except Exception as e:
+        print(f"[WARN] Failed to initialize Time Series metrics: {e}")
+
     task_id = os.environ.get("TASK_ID")
 
     if task_id:

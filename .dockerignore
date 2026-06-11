@@ -1,0 +1,37 @@
+# Secrets — NEVER ship in Docker image
+.env
+.env.local
+.env.*.local
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Large data files (use volumes or object storage)
+synthetic_trajectories.json
+results/
+
+# Git
+.git/
+.gitattributes
+
+# Dev tools
+.vscode/
+.idea/
+*.code-workspace
+scratch/
+
+# Notebooks
+notebooks/
+
+# OS cruft
+.DS_Store
+Thumbs.db

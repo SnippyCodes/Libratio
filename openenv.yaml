@@ -297,7 +297,7 @@ baseline:
   script: fleet_inference.py
   description: "Multi-agent LLM inference using Groq API with per-agent conversation history"
   expected_scores:
-    fleet_precision: 0.99
+    fleet_precision: 0.86
     fleet_oversight: 0.83
-    fleet_resource: 0.91
-    fleet_recovery: 0.80
+    fleet_resource: 0.35
+    fleet_recovery: 0.86

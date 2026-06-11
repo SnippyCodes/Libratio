@@ -58,8 +58,8 @@ function initChart() {
         {
           label: 'Trained Agent',
           data: trainedData,
-          borderColor: '#00e676',
-          backgroundColor: 'rgba(0, 230, 118, 0.1)',
+          borderColor: '#00d2ff',
+          backgroundColor: 'rgba(0, 210, 255, 0.08)',
           borderWidth: 2,
           fill: true,
           tension: 0.4
@@ -67,7 +67,7 @@ function initChart() {
         {
           label: 'Random Baseline',
           data: baselineData,
-          borderColor: '#ff1744',
+          borderColor: '#ff4d4d',
           backgroundColor: 'transparent',
           borderWidth: 2,
           borderDash: [5, 5],
@@ -82,7 +82,7 @@ function initChart() {
       plugins: { legend: { display: false } },
       scales: {
         x: { display: false },
-        y: { min: 0, max: 1, grid: { color: '#162030' }, ticks: { color: '#7e90b0', stepSize: 0.5, font: {size: 9} } }
+        y: { min: 0, max: 1, grid: { color: 'rgba(255, 255, 255, 0.06)' }, ticks: { color: '#bbc9cf', stepSize: 0.5, font: {size: 9} } }
       }
     }
   });
@@ -530,6 +530,117 @@ stepBtn.addEventListener("click", async () => {
     stepBtn.textContent = "STEP ENVIRONMENT";
   }
 });
+
+// ════════════════════════════════════════
+// HISTORICAL TRAJECTORY SEARCH (RAG EXPLORATION)
+// ════════════════════════════════════════
+const searchInput = $("searchInput");
+const searchBtn = $("searchBtn");
+const searchResults = $("searchResults");
+
+async function performSearch() {
+  const query = searchInput.value.trim();
+  if (!query) {
+    searchResults.innerHTML = '<div style="color: #7e90b0; text-align: center; padding: 10px;">Type query above to search 2,863 trajectories.</div>';
+    return;
+  }
+  
+  const searchTypeEl = document.querySelector('input[name="searchType"]:checked');
+  const searchType = searchTypeEl ? searchTypeEl.value : 'hybrid';
+  
+  searchBtn.disabled = true;
+  searchBtn.textContent = "SEARCHING...";
+  searchResults.innerHTML = '<div style="color: #00e5ff; text-align: center; padding: 10px;">Querying Atlas Search...</div>';
+  
+  try {
+    const res = await fetch(`/api/search?query=${encodeURIComponent(query)}&type=${searchType}&limit=5`);
+    const data = await res.json();
+    
+    if (data.status === "error") {
+      searchResults.innerHTML = `<div style="color: #ff1744; padding: 10px;">Error: ${data.message}</div>`;
+      return;
+    }
+    
+    if (!data.results || data.results.length === 0) {
+      searchResults.innerHTML = '<div style="color: #7e90b0; text-align: center; padding: 10px;">No matching trajectories found.</div>';
+      return;
+    }
+    
+    let html = '';
+    data.results.forEach((r) => {
+      let scoreLabel = "";
+      if (searchType === "hybrid" && r.rrf_score !== undefined) {
+        scoreLabel = `RRF: ${r.rrf_score.toFixed(4)}`;
+      } else if (searchType === "vector" && r.vector_score !== undefined) {
+        scoreLabel = `Sim: ${r.vector_score.toFixed(3)}`;
+      } else if (searchType === "text" && r.search_score !== undefined) {
+        scoreLabel = `Score: ${r.search_score.toFixed(2)}`;
+      }
+      
+      const outcomeCls = r.outcome === "SUCCESS" ? "outcome-success" : "outcome-crash";
+      const strat = r.precision_strategy || {};
+      const stratStr = Object.entries(strat).map(([k,v]) => `${k}:${v}`).join(', ');
+      const failureHtml = r.failure_reason ? `<div style="color: #ff5252; margin-top: 4px; font-size: 10px;">Failure: ${r.failure_reason}</div>` : '';
+      
+      html += `
+        <div style="background: rgba(30, 41, 59, 0.4); border: 1px solid #1e293b; border-radius: 4px; padding: 8px; font-family: 'Inter', sans-serif;">
+          <div style="display: flex; justify-content: space-between; font-weight: 600; font-size: 12px; margin-bottom: 4px;">
+            <span style="color: #00e5ff;">${r.model_name || r.model_id}</span>
+            <span style="font-size: 9px; color: #7e90b0; background: #0b1329; padding: 1px 5px; border-radius: 3px; border: 1px solid #1e293b;">${scoreLabel}</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; font-size: 10px; color: #cbd5e1; margin-bottom: 2px;">
+            <span>Outcome: <strong class="${outcomeCls}" style="color: ${r.outcome === "SUCCESS" ? "#00e676" : "#ff1744"}">${r.outcome}</strong></span>
+            <span>VRAM: ${r.memory_used_gb} GB</span>
+          </div>
+          <div style="font-size: 9px; color: #94a3b8; background: rgba(11, 19, 41, 0.5); padding: 4px; border-radius: 2px; border: 1px solid rgba(30, 41, 59, 0.5); word-break: break-all;">
+            <strong>Strat:</strong> ${stratStr}
+          </div>
+          ${failureHtml}
+        </div>
+      `;
+    });
+    
+    searchResults.innerHTML = html;
+  } catch (err) {
+    searchResults.innerHTML = `<div style="color: #ff1744; padding: 10px;">Failed: ${err.message}</div>`;
+  } finally {
+    searchBtn.disabled = false;
+    searchBtn.textContent = "FIND";
+  }
+}
+
+searchBtn.addEventListener("click", performSearch);
+searchInput.addEventListener("keypress", (e) => {
+  if (e.key === "Enter") performSearch();
+});
+
+// ════════════════════════════════════════
+// ATLAS CHARTS EMBEDDING
+// ════════════════════════════════════════
+window.embedAtlasChart = function() {
+  const input = document.getElementById("chartsUrlInput").value.trim();
+  const container = document.getElementById("chartsFrameContainer");
+  if (!input) {
+    container.innerHTML = '<span style="color: #7e90b0; text-align: center; padding: 10px;">No chart embedded. Paste your sharing URL above to render Atlas Charts.</span>';
+    return;
+  }
+  
+  let src = "";
+  if (input.includes("<iframe") && input.includes("src=")) {
+    const match = input.match(/src=["']([^"']+)["']/);
+    if (match && match[1]) {
+      src = match[1];
+    }
+  } else {
+    src = input;
+  }
+  
+  if (src) {
+    container.innerHTML = `<iframe src="${src}" style="background: #0B1329; border: none; border-radius: 4px; width: 100%; height: 100%;" allowfullscreen></iframe>`;
+  } else {
+    container.innerHTML = '<span style="color: #ff1744; text-align: center; padding: 10px;">Invalid URL or iframe tag format.</span>';
+  }
+};
 
 // ════════════════════════════════════════
 // INIT

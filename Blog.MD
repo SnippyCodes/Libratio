@@ -35,6 +35,13 @@ One of the hardest parts of RL is preventing the model from gaming the system. I
 **Difference Rewards for Multi-Agent Scenarios**
 In cluster negotiation, it is difficult to assign credit. If Model A and Model B share a cluster, does an overall throughput increase belong to A or B? We implemented Difference Rewards: the environment evaluates the cluster's total reward, then mathematically removes an agent's contribution to calculate exactly how much *marginal* value that specific agent added. 
 
+### The MongoDB Intelligent Core
+A production-ready fleet management agent needs more than just a simulator; it needs a memory. We integrated MongoDB Atlas as our core data platform to store, search, and analyze historical fleet telemetry:
+
+* **Atlas Vector Search (Semantic RAG)**: Instead of querying for exact matches, we serialize GPU training trajectories into natural language and generate 768-dim embeddings using Gemini `models/gemini-embedding-001`. A MongoDB Atlas Vector Search index allows our predictive agent to run semantic searches, retrieving historically similar crashes to recommend preventative precision strategies.
+* **Native Time Series**: We log step-by-step GPU metrics (VRAM, thermal status, power) to a native MongoDB Time Series collection. This enables automatic compression (saving 95% space) and lightning-fast sequential data queries.
+* **Change Stream Triaging**: A background SRE daemon watches the database runs via MongoDB Change Streams. If a training run fails, it catches the insertion event, pulls the step history from the Time Series collection, runs automated diagnostics, and logs a detailed report in our `incident_reports` collection.
+
 ### Training with GRPO and Unsloth
 The agent behavior was trained with RL against the Agentic Kernel using Hugging Face's TRL framework and Unsloth. 
 
